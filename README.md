@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Security hardening
+## Current milestone: Kubernetes staging deployment
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -89,7 +89,12 @@ Implemented:
 - configurable per-client token-bucket rate limiting;
 - constant-time bearer protection for the Prometheus endpoint;
 - CI vulnerability scanning for Go, npm and the API container image;
-- a maintained threat model in `docs/THREAT_MODEL.md`.
+- a maintained threat model in `docs/THREAT_MODEL.md`;
+- unprivileged API and Web runtime containers;
+- a cloud-neutral Kubernetes staging overlay with two API and Web replicas;
+- readiness/liveness probes, resource limits, disruption budgets and API autoscaling;
+- default-deny ingress network policies and cert-manager HTTPS ingress;
+- protected manual GitHub deployment with secrets outside Git and immutable SHA-tagged GHCR images.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -104,6 +109,8 @@ Open the analyst website at [http://localhost:3000](http://localhost:3000). The 
 
 Operational metrics are available at [http://localhost:8080/metrics](http://localhost:8080/metrics), Prometheus at [http://localhost:9090](http://localhost:9090), and the provisioned read-only Grafana dashboard at [http://localhost:3001](http://localhost:3001).
 Distributed traces can be explored in Jaeger at [http://localhost:16686](http://localhost:16686).
+
+The production-like staging manifests and deployment prerequisites are documented in [`deploy/k8s/README.md`](deploy/k8s/README.md). They require an external PostgreSQL database, OIDC provider, Kubernetes cluster and DNS name; no cloud account is provisioned automatically.
 
 Analysts and administrators can register customers from **Customers → New customer**. After an independent reviewer activates a customer, analysts and administrators can ingest and monitor payments from **Customers → Add transaction**. Reviewer-only controls are hidden from unauthorized roles, while the API remains the authoritative authorization boundary.
 
@@ -270,9 +277,9 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Email delivery adapter and notification-channel preferences.
-2. Staging deployment with HTTPS, managed secrets and automated rollback.
-3. Backups, tested restore procedures and disaster-recovery documentation.
+1. Backups, tested restore procedures and disaster-recovery documentation.
+2. Email delivery adapter and notification-channel preferences.
+3. Production provider onboarding, SLO validation and a release/demo package.
 
 ## Important boundary
 

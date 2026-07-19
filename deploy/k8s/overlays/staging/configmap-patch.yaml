@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: fccp-config}
+data:
+  OIDC_AUTHORITY: https://identity.staging.example.com/realms/fccp
+  JWT_ISSUER: https://identity.staging.example.com/realms/fccp
+  JWT_JWKS_URL: https://identity.staging.example.com/realms/fccp/protocol/openid-connect/certs
