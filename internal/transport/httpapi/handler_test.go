@@ -20,6 +20,7 @@ import (
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/auth"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/memory"
+	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/screening"
 )
 
 func TestOnboardCustomer(t *testing.T) {
@@ -381,6 +382,34 @@ func TestDueDiligenceWorkflow(t *testing.T) {
 	}
 }
 
+func TestScreeningWorkflow(t *testing.T) {
+	repo := memory.NewRepository()
+	h := testHandler(t, repo)
+	create := httptest.NewRequest(http.MethodPost, "/v1/customers", bytes.NewReader([]byte(`{"type":"individual","legal_name":"Viktor Petrov","country_code":"GB","risk_factors":{"country_risk":"low","source_of_funds_verified":true}}`)))
+	create.Header.Set("Authorization", "Bearer "+signedToken("analyst", auth.RoleAnalyst))
+	created := httptest.NewRecorder()
+	h.ServeHTTP(created, create)
+	var customer domain.Customer
+	if err := json.NewDecoder(created.Body).Decode(&customer); err != nil {
+		t.Fatal(err)
+	}
+	screen := httptest.NewRequest(http.MethodPost, "/v1/customers/"+customer.ID+"/screenings", nil)
+	screen.Header.Set("Authorization", "Bearer "+signedToken("analyst", auth.RoleAnalyst))
+	screened := httptest.NewRecorder()
+	h.ServeHTTP(screened, screen)
+	var result domain.ScreeningResult
+	if err := json.NewDecoder(screened.Body).Decode(&result); err != nil || screened.Code != http.StatusCreated || len(result.Matches) != 1 {
+		t.Fatalf("result=%+v status=%d err=%v", result, screened.Code, err)
+	}
+	disposition := httptest.NewRequest(http.MethodPost, "/v1/screening-matches/"+result.Matches[0].ID+"/disposition", bytes.NewReader([]byte(`{"status":"false_positive","reason":"Identity differs by date of birth"}`)))
+	disposition.Header.Set("Authorization", "Bearer "+signedToken("reviewer", auth.RoleReviewer))
+	reviewed := httptest.NewRecorder()
+	h.ServeHTTP(reviewed, disposition)
+	if reviewed.Code != http.StatusOK {
+		t.Fatalf("review=%d %s", reviewed.Code, reviewed.Body.String())
+	}
+}
+
 func TestListCustomersUsesCursorPagination(t *testing.T) {
 	t.Parallel()
 	repo := memory.NewRepository()
@@ -435,6 +464,7 @@ func TestReadinessFailsWhenDatabaseIsUnavailable(t *testing.T) {
 		application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo),
 		application.NewCaseService(repo),
 		application.NewDueDiligenceService(repo),
+		application.NewScreeningService(repo, screening.DemoProvider{}),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator,
 		healthCheckerFunc(func(context.Context) error { return errors.New("database unavailable") }),
 	)
@@ -466,7 +496,7 @@ func testHandler(t *testing.T, repo *memory.Repository) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo), application.NewCaseService(repo), application.NewDueDiligenceService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator, healthCheckerFunc(func(context.Context) error { return nil }))
+	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo), application.NewCaseService(repo), application.NewDueDiligenceService(repo), application.NewScreeningService(repo, screening.DemoProvider{}), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator, healthCheckerFunc(func(context.Context) error { return nil }))
 }
 
 type healthCheckerFunc func(context.Context) error

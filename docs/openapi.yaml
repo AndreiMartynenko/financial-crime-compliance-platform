@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.11.0
-  description: Portfolio API for authenticated customer-risk assessment, financial transaction monitoring, and explainable alert investigation.
+  version: 0.12.0
+  description: Portfolio API for authenticated customer-risk assessment, sanctions and PEP screening, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
 paths:
@@ -197,6 +197,50 @@ paths:
       responses:
         "200": {description: Document reviewed, content: {application/json: {schema: {$ref: "#/components/schemas/KYCDocument"}}}}
         "409": {description: Document is not pending}
+  /v1/customers/{customer_id}/screenings:
+    post:
+      operationId: screenCustomer
+      summary: Screen a customer and their beneficial owners
+      description: Requires analyst or admin role. Runs the configured provider and persists runs, potential matches and audit events atomically.
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      responses:
+        "201": {description: Screening completed, content: {application/json: {schema: {$ref: "#/components/schemas/ScreeningResult"}}}}
+        "404": {description: Customer not found}
+        "500": {description: Screening result could not be persisted}
+  /v1/customers/{customer_id}/screening-matches:
+    get:
+      operationId: listScreeningMatches
+      summary: List screening matches for a customer
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      responses:
+        "200": {description: Screening-match history, content: {application/json: {schema: {$ref: "#/components/schemas/ScreeningMatchPage"}}}}
+  /v1/screening-matches/{match_id}/disposition:
+    post:
+      operationId: dispositionScreeningMatch
+      summary: Confirm or dismiss a potential screening match
+      description: Requires reviewer or admin role. A reason is mandatory and the disposition is audit logged.
+      security: [{bearerAuth: []}]
+      parameters:
+        - in: path
+          name: match_id
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, reason]
+              properties:
+                status: {type: string, enum: [confirmed, false_positive]}
+                reason: {type: string, minLength: 1}
+      responses:
+        "200": {description: Match disposition recorded, content: {application/json: {schema: {$ref: "#/components/schemas/ScreeningMatch"}}}}
+        "409": {description: Match is no longer pending review}
+        "422": {description: Invalid status or missing reason}
   /v1/customers/{customer_id}/approve:
     post:
       operationId: approveCustomer
@@ -675,6 +719,48 @@ components:
         profile: {$ref: "#/components/schemas/CDDProfile"}
         beneficial_owners: {type: array, items: {$ref: "#/components/schemas/BeneficialOwner"}}
         documents: {type: array, items: {$ref: "#/components/schemas/KYCDocument"}}
+    ScreeningRun:
+      type: object
+      required: [id, customer_id, subject_type, subject_id, query_name, provider, created_by, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        customer_id: {type: string, format: uuid}
+        subject_type: {type: string, enum: [customer, beneficial_owner]}
+        subject_id: {type: string, format: uuid}
+        query_name: {type: string}
+        provider: {type: string}
+        created_by: {type: string}
+        created_at: {type: string, format: date-time}
+    ScreeningMatch:
+      type: object
+      required: [id, run_id, customer_id, subject_type, subject_id, query_name, list_type, matched_name, score, reason, status, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        run_id: {type: string, format: uuid}
+        customer_id: {type: string, format: uuid}
+        subject_type: {type: string, enum: [customer, beneficial_owner]}
+        subject_id: {type: string, format: uuid}
+        query_name: {type: string}
+        list_type: {type: string, enum: [sanctions, pep, adverse_media]}
+        matched_name: {type: string}
+        score: {type: integer, minimum: 0, maximum: 100}
+        reason: {type: string}
+        status: {type: string, enum: [potential, confirmed, false_positive]}
+        created_at: {type: string, format: date-time}
+        reviewed_by: {type: string}
+        reviewed_at: {type: string, format: date-time}
+        disposition_reason: {type: string}
+    ScreeningResult:
+      type: object
+      required: [runs, matches]
+      properties:
+        runs: {type: array, items: {$ref: "#/components/schemas/ScreeningRun"}}
+        matches: {type: array, items: {$ref: "#/components/schemas/ScreeningMatch"}}
+    ScreeningMatchPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/ScreeningMatch"}}
     RiskFactors:
       type: object
       required: [country_risk, source_of_funds_verified]

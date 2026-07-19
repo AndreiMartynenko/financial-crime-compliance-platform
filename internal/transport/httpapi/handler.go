@@ -21,6 +21,7 @@ type Handler struct {
 	queryService        *application.QueryService
 	caseService         *application.CaseService
 	dueDiligenceService *application.DueDiligenceService
+	screeningService    *application.ScreeningService
 	logger              *slog.Logger
 	readiness           HealthChecker
 }
@@ -29,8 +30,8 @@ type HealthChecker interface {
 	Ping(context.Context) error
 }
 
-func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, queryService *application.QueryService, caseService *application.CaseService, dueDiligenceService *application.DueDiligenceService, logger *slog.Logger, authenticator *auth.Authenticator, health HealthChecker) http.Handler {
-	h := &Handler{service: service, transactionService: transactionService, queryService: queryService, caseService: caseService, dueDiligenceService: dueDiligenceService, logger: logger, readiness: health}
+func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, queryService *application.QueryService, caseService *application.CaseService, dueDiligenceService *application.DueDiligenceService, screeningService *application.ScreeningService, logger *slog.Logger, authenticator *auth.Authenticator, health HealthChecker) http.Handler {
+	h := &Handler{service: service, transactionService: transactionService, queryService: queryService, caseService: caseService, dueDiligenceService: dueDiligenceService, screeningService: screeningService, logger: logger, readiness: health}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.health)
 	mux.HandleFunc("GET /readyz", h.ready)
@@ -56,7 +57,57 @@ func NewHandler(service *application.OnboardingService, transactionService *appl
 	mux.Handle("POST /v1/customers/{customer_id}/beneficial-owners", authenticate(authenticator, requireRoles(h.addBeneficialOwner, auth.RoleAnalyst, auth.RoleAdmin)))
 	mux.Handle("POST /v1/customers/{customer_id}/kyc-documents", authenticate(authenticator, requireRoles(h.addKYCDocument, auth.RoleAnalyst, auth.RoleAdmin)))
 	mux.Handle("POST /v1/kyc-documents/{document_id}/review", authenticate(authenticator, requireRoles(h.reviewKYCDocument, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("POST /v1/customers/{customer_id}/screenings", authenticate(authenticator, requireRoles(h.screenCustomer, auth.RoleAnalyst, auth.RoleAdmin)))
+	mux.Handle("GET /v1/customers/{customer_id}/screening-matches", authenticate(authenticator, requireRoles(h.listScreeningMatches, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("POST /v1/screening-matches/{match_id}/disposition", authenticate(authenticator, requireRoles(h.dispositionScreeningMatch, auth.RoleReviewer, auth.RoleAdmin)))
 	return requestLogging(logger, mux)
+}
+
+type screeningDispositionRequest struct {
+	Status domain.ScreeningMatchStatus `json:"status"`
+	Reason string                      `json:"reason"`
+}
+
+func (h *Handler) screenCustomer(w http.ResponseWriter, r *http.Request) {
+	result, err := h.screeningService.ScreenCustomer(r.Context(), r.PathValue("customer_id"), principalSubject(r))
+	if errors.Is(err, domain.ErrCustomerNotFound) {
+		writeError(w, 404, "customer_not_found", "Customer was not found")
+		return
+	}
+	if err != nil {
+		h.readError(w, "screen customer", err)
+		return
+	}
+	writeJSON(w, 201, result)
+}
+func (h *Handler) listScreeningMatches(w http.ResponseWriter, r *http.Request) {
+	result, err := h.screeningService.List(r.Context(), r.PathValue("customer_id"))
+	if err != nil {
+		h.readError(w, "list screening matches", err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": result})
+}
+func (h *Handler) dispositionScreeningMatch(w http.ResponseWriter, r *http.Request) {
+	var request screeningDispositionRequest
+	if decodeJSON(w, r, &request) != nil {
+		writeError(w, 400, "invalid_json", "Request body is not valid")
+		return
+	}
+	result, err := h.screeningService.Disposition(r.Context(), r.PathValue("match_id"), request.Status, request.Reason, principalSubject(r))
+	if errors.Is(err, application.ErrInvalidScreening) {
+		writeError(w, 422, "invalid_disposition", "Disposition failed validation")
+		return
+	}
+	if errors.Is(err, domain.ErrReviewConflict) {
+		writeError(w, 409, "review_conflict", "Match is not pending review")
+		return
+	}
+	if err != nil {
+		h.readError(w, "disposition screening match", err)
+		return
+	}
+	writeJSON(w, 200, result)
 }
 
 type documentReviewRequest struct {

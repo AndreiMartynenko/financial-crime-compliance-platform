@@ -12,17 +12,18 @@ import (
 )
 
 type Repository struct {
-	mu           sync.RWMutex
-	customers    map[string]domain.Customer
-	transactions map[string]domain.Transaction
-	alerts       map[string]domain.Alert
-	idempotency  map[string]string
-	events       map[string][]domain.AuditEvent
-	cases        map[string]domain.InvestigationCase
-	caseComments map[string][]domain.CaseComment
-	cddProfiles  map[string]domain.CDDProfile
-	owners       map[string][]domain.BeneficialOwner
-	documents    map[string]domain.KYCDocument
+	mu               sync.RWMutex
+	customers        map[string]domain.Customer
+	transactions     map[string]domain.Transaction
+	alerts           map[string]domain.Alert
+	idempotency      map[string]string
+	events           map[string][]domain.AuditEvent
+	cases            map[string]domain.InvestigationCase
+	caseComments     map[string][]domain.CaseComment
+	cddProfiles      map[string]domain.CDDProfile
+	owners           map[string][]domain.BeneficialOwner
+	documents        map[string]domain.KYCDocument
+	screeningMatches map[string]domain.ScreeningMatch
 }
 
 func (r *Repository) GetCustomer(_ context.Context, id string) (domain.Customer, error) {
@@ -148,7 +149,46 @@ func limit[T any](items []T, size int) []T {
 }
 
 func NewRepository() *Repository {
-	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), idempotency: make(map[string]string), events: make(map[string][]domain.AuditEvent), cases: make(map[string]domain.InvestigationCase), caseComments: make(map[string][]domain.CaseComment), cddProfiles: make(map[string]domain.CDDProfile), owners: make(map[string][]domain.BeneficialOwner), documents: make(map[string]domain.KYCDocument)}
+	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), idempotency: make(map[string]string), events: make(map[string][]domain.AuditEvent), cases: make(map[string]domain.InvestigationCase), caseComments: make(map[string][]domain.CaseComment), cddProfiles: make(map[string]domain.CDDProfile), owners: make(map[string][]domain.BeneficialOwner), documents: make(map[string]domain.KYCDocument), screeningMatches: make(map[string]domain.ScreeningMatch)}
+}
+
+func (r *Repository) SaveScreening(_ context.Context, _ []domain.ScreeningRun, matches []domain.ScreeningMatch, events []domain.AuditEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range matches {
+		r.screeningMatches[m.ID] = m
+	}
+	for _, event := range events {
+		r.events[event.AggregateID] = append(r.events[event.AggregateID], event)
+	}
+	return nil
+}
+func (r *Repository) ListScreeningMatches(_ context.Context, customerID string) ([]domain.ScreeningMatch, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	items := []domain.ScreeningMatch{}
+	for _, m := range r.screeningMatches {
+		if m.CustomerID == customerID {
+			items = append(items, m)
+		}
+	}
+	return items, nil
+}
+func (r *Repository) DispositionScreeningMatch(_ context.Context, id string, status domain.ScreeningMatchStatus, reason, actor string, event domain.AuditEvent) (domain.ScreeningMatch, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, ok := r.screeningMatches[id]
+	if !ok || m.Status != domain.MatchPotential {
+		return m, domain.ErrReviewConflict
+	}
+	m.Status = status
+	m.ReviewedBy = actor
+	m.ReviewedAt = &event.OccurredAt
+	m.DispositionReason = reason
+	event.AggregateID = m.CustomerID
+	r.screeningMatches[id] = m
+	r.events[m.CustomerID] = append(r.events[m.CustomerID], event)
+	return m, nil
 }
 
 func (r *Repository) GetDueDiligence(_ context.Context, id string) (domain.DueDiligenceDetails, error) {

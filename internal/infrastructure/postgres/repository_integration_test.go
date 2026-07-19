@@ -351,6 +351,37 @@ func TestDueDiligencePersistsAndAuditsDocumentReview(t *testing.T) {
 	}
 }
 
+func TestScreeningPersistsAndDisposesMatchAtomically(t *testing.T) {
+	ctx := context.Background()
+	pool := integrationPool(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	customer := testCustomer(now)
+	cleanupCustomer(t, pool, customer)
+	repo := NewRepository(pool)
+	if err := repo.CreateCustomer(ctx, customer, domain.AuditEvent{ID: "45dc3331-2f74-4d94-962a-79c746c76214", AggregateType: "customer", AggregateID: customer.ID, EventType: "customer.onboarded", Actor: "maker", OccurredAt: now, Payload: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	run := domain.ScreeningRun{ID: "9131e714-5eba-478b-b84e-50fb95f6a572", CustomerID: customer.ID, SubjectType: domain.ScreeningCustomer, SubjectID: customer.ID, QueryName: customer.LegalName, Provider: "integration-provider", CreatedBy: "analyst", CreatedAt: now}
+	match := domain.ScreeningMatch{ID: "384c015e-5855-42d1-a745-f545489d8c6b", RunID: run.ID, CustomerID: customer.ID, SubjectType: domain.ScreeningCustomer, SubjectID: customer.ID, QueryName: customer.LegalName, ListType: domain.ScreeningSanctions, MatchedName: customer.LegalName, Score: 100, Reason: "exact match", Status: domain.MatchPotential, CreatedAt: now}
+	createdEvent := domain.AuditEvent{ID: "d0b199d7-61c9-42a8-b6dc-2b3c9710ae30", AggregateType: "customer", AggregateID: customer.ID, EventType: "screening.completed", Actor: "analyst", OccurredAt: now, Payload: map[string]any{"matches": float64(1)}}
+	if err := repo.SaveScreening(ctx, []domain.ScreeningRun{run}, []domain.ScreeningMatch{match}, []domain.AuditEvent{createdEvent}); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := repo.ListScreeningMatches(ctx, customer.ID)
+	if err != nil || len(matches) != 1 || matches[0].Status != domain.MatchPotential {
+		t.Fatalf("matches=%+v err=%v", matches, err)
+	}
+	dispositionEvent := domain.AuditEvent{ID: "10735423-c465-46cc-af19-3a06644066bf", AggregateType: "customer", EventType: "screening.match_dispositioned", Actor: "reviewer", OccurredAt: now.Add(time.Second), Payload: map[string]any{}}
+	disposed, err := repo.DispositionScreeningMatch(ctx, match.ID, domain.MatchFalsePositive, "identity differs", "reviewer", dispositionEvent)
+	if err != nil || disposed.Status != domain.MatchFalsePositive || disposed.ReviewedBy != "reviewer" {
+		t.Fatalf("disposed=%+v err=%v", disposed, err)
+	}
+	events, err := repo.ListAuditEvents(ctx, customer.ID)
+	if err != nil || len(events) != 3 {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
 func containsAlert(alerts []domain.Alert, id string, status domain.AlertStatus) bool {
 	for _, alert := range alerts {
 		if alert.ID == id && alert.Status == status {
@@ -378,8 +409,8 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 7 {
-		t.Fatalf("applied migrations=%d, want 7", migrationCount)
+	if migrationCount != 8 {
+		t.Fatalf("applied migrations=%d, want 8", migrationCount)
 	}
 	return pool
 }

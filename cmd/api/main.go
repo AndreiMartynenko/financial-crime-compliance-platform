@@ -13,6 +13,7 @@ import (
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/application"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/auth"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/postgres"
+	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/screening"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/transport/httpapi"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -65,7 +66,8 @@ func run(logger *slog.Logger) error {
 	queryService := application.NewQueryService(repo)
 	caseService := application.NewCaseService(repo)
 	dueDiligenceService := application.NewDueDiligenceService(repo)
-	handler := httpapi.NewHandler(service, transactionService, queryService, caseService, dueDiligenceService, logger, authenticator, pool)
+	screeningService := application.NewScreeningService(repo, screening.DemoProvider{})
+	handler := httpapi.NewHandler(service, transactionService, queryService, caseService, dueDiligenceService, screeningService, logger, authenticator, pool)
 
 	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
 	serverErrors := make(chan error, 1)

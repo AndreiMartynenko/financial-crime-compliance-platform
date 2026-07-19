@@ -868,6 +868,83 @@ func (r *Repository) ReviewKYCDocument(ctx context.Context, id string, status do
 	return stored, nil
 }
 
+func (r *Repository) SaveScreening(ctx context.Context, runs []domain.ScreeningRun, matches []domain.ScreeningMatch, events []domain.AuditEvent) (err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, run := range runs {
+		if _, err = tx.Exec(ctx, `INSERT INTO screening_runs(id,customer_id,subject_type,subject_id,query_name,provider,created_by,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, run.ID, run.CustomerID, run.SubjectType, run.SubjectID, run.QueryName, run.Provider, run.CreatedBy, run.CreatedAt); err != nil {
+			return err
+		}
+	}
+	for _, m := range matches {
+		if _, err = tx.Exec(ctx, `INSERT INTO screening_matches(id,run_id,customer_id,subject_type,subject_id,query_name,list_type,matched_name,score,reason,status,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, m.ID, m.RunID, m.CustomerID, m.SubjectType, m.SubjectID, m.QueryName, m.ListType, m.MatchedName, m.Score, m.Reason, m.Status, m.CreatedAt); err != nil {
+			return err
+		}
+	}
+	for _, event := range events {
+		if err = insertAuditEvent(ctx, tx, event); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+func scanScreeningMatch(row scanner) (domain.ScreeningMatch, error) {
+	var m domain.ScreeningMatch
+	var reviewedBy, reason *string
+	err := row.Scan(&m.ID, &m.RunID, &m.CustomerID, &m.SubjectType, &m.SubjectID, &m.QueryName, &m.ListType, &m.MatchedName, &m.Score, &m.Reason, &m.Status, &m.CreatedAt, &reviewedBy, &m.ReviewedAt, &reason)
+	if reviewedBy != nil {
+		m.ReviewedBy = *reviewedBy
+	}
+	if reason != nil {
+		m.DispositionReason = *reason
+	}
+	return m, err
+}
+
+const screeningMatchSelect = `id,run_id,customer_id,subject_type,subject_id,query_name,list_type,matched_name,score,reason,status,created_at,reviewed_by,reviewed_at,disposition_reason`
+
+func (r *Repository) ListScreeningMatches(ctx context.Context, customerID string) ([]domain.ScreeningMatch, error) {
+	rows, err := r.pool.Query(ctx, "SELECT "+screeningMatchSelect+` FROM screening_matches WHERE customer_id=$1 ORDER BY created_at DESC,id`, customerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []domain.ScreeningMatch{}
+	for rows.Next() {
+		m, err := scanScreeningMatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, m)
+	}
+	return items, rows.Err()
+}
+func (r *Repository) DispositionScreeningMatch(ctx context.Context, id string, status domain.ScreeningMatchStatus, reason, actor string, event domain.AuditEvent) (stored domain.ScreeningMatch, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return stored, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err = scanScreeningMatch(tx.QueryRow(ctx, "UPDATE screening_matches SET status=$2,reviewed_by=$3,reviewed_at=$4,disposition_reason=$5 WHERE id=$1 AND status='potential' RETURNING "+screeningMatchSelect, id, status, actor, event.OccurredAt, reason))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return stored, domain.ErrReviewConflict
+	}
+	if err != nil {
+		return stored, err
+	}
+	event.AggregateID = stored.CustomerID
+	if err = insertAuditEvent(ctx, tx, event); err != nil {
+		return stored, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return stored, err
+	}
+	return stored, nil
+}
+
 func nullableCursorID(id string) any {
 	if id == "" {
 		return nil

@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: KYC and customer due diligence
+## Current milestone: Sanctions, PEP and adverse-media screening
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -55,6 +55,11 @@ Implemented:
 - beneficial-owner capture including ownership percentage, country and PEP indicator;
 - KYC document evidence with independent reviewer verification or rejection;
 - periodic review scheduling and a dedicated role-aware KYC/CDD workspace.
+- provider-independent customer and beneficial-owner screening;
+- a deterministic local demo provider for sanctions, PEP and adverse-media candidates;
+- transactional persistence of screening runs, potential matches and audit events;
+- reviewer/admin match confirmation and false-positive disposition with mandatory rationale;
+- an immutable screening history and role-aware screening workspace.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -214,8 +219,9 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Case management and investigation notes.
-2. Minimal analyst web interface.
+1. Production-grade external screening-provider adapter and resilient asynchronous rescreening.
+2. Ongoing monitoring schedules, notifications and operational observability.
+3. Deployment hardening, secrets management, backups and disaster-recovery procedures.
 
 ## Important boundary
 
