@@ -17,6 +17,9 @@ var customerApprovalSchema string
 //go:embed 000003_transaction_ingestion.up.sql
 var transactionIngestionSchema string
 
+//go:embed 000004_monitoring_alerts.up.sql
+var monitoringAlertsSchema string
+
 func Up(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := pool.Exec(ctx, initialSchema); err != nil {
 		return fmt.Errorf("apply initial database migration: %w", err)
@@ -26,6 +29,9 @@ func Up(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	if _, err := pool.Exec(ctx, transactionIngestionSchema); err != nil {
 		return fmt.Errorf("apply transaction ingestion migration: %w", err)
+	}
+	if _, err := pool.Exec(ctx, monitoringAlertsSchema); err != nil {
+		return fmt.Errorf("apply monitoring alerts migration: %w", err)
 	}
 	return nil
 }

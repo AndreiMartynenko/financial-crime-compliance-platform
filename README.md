@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Financial transaction ingestion
+## Current milestone: Versioned transaction monitoring and alerts
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -30,7 +30,11 @@ Implemented:
 - ingestion of inbound and outbound customer transactions;
 - integer minor-unit monetary amounts without floating-point rounding;
 - enforcement that transactions belong to active customers;
-- atomic transaction and `transaction.ingested` audit-event persistence.
+- atomic transaction and `transaction.ingested` audit-event persistence;
+- deterministic transaction-monitoring rules with stored rule versions;
+- explainable alerts with rule and reason codes;
+- atomic transaction, alert, and audit-event persistence;
+- role-protected alert listing and closure workflow.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -126,14 +130,37 @@ curl -i http://localhost:8080/v1/transactions \
     "external_ref": "PAY-1001",
     "customer_id": "'$CUSTOMER_ID'",
     "direction": "outbound",
-    "amount_minor": 125050,
+    "amount_minor": 1250000,
     "currency": "GBP",
-    "counterparty_country": "DE",
+    "counterparty_country": "IR",
     "occurred_at": "2026-07-19T12:00:00Z"
   }'
 ```
 
-`amount_minor` is expressed in the currency's minor unit—for example, `125050` GBP represents GBP 1,250.50. Transaction and audit event writes share one PostgreSQL transaction.
+`amount_minor` is expressed in the currency's minor unit—for example, `125050` GBP represents GBP 1,250.50. The response includes both the transaction and any alerts raised. Transaction, alerts, and audit events share one PostgreSQL transaction.
+
+## Transaction-monitoring rules
+
+Rules are deterministic and store `transaction-monitoring-v1` on every alert, so historical decisions remain explainable after future rule changes.
+
+| Rule | Trigger | Reason code |
+|---|---|---|
+| `large_transaction` | Amount is at least 1,000,000 minor units | `amount_threshold_exceeded` |
+| `high_risk_counterparty_country` | Counterparty country is in the configured product-risk list | `counterparty_country_high_risk` |
+
+These thresholds and country classifications are synthetic product assumptions for this educational demo, not legal or sanctions determinations.
+
+List open alerts and close one after review:
+
+```bash
+curl -s 'http://localhost:8080/v1/alerts?status=open' \
+  -H "Authorization: Bearer $JWT"
+
+curl -i -X POST http://localhost:8080/v1/alerts/$ALERT_ID/close \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $REVIEWER_JWT" \
+  -d '{"reason":"Reviewed and explained by expected customer activity"}'
+```
 
 ## Risk model
 
@@ -153,9 +180,8 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Versioned transaction-monitoring rules and alert creation.
-2. Alert investigation and case management.
-3. Minimal analyst web interface.
+1. Case management and investigation notes.
+2. Minimal analyst web interface.
 
 ## Important boundary
 

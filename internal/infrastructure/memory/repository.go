@@ -12,14 +12,18 @@ type Repository struct {
 	mu           sync.RWMutex
 	customers    map[string]domain.Customer
 	transactions map[string]domain.Transaction
+	alerts       map[string]domain.Alert
 	events       map[string][]domain.AuditEvent
 }
 
 func NewRepository() *Repository {
-	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), events: make(map[string][]domain.AuditEvent)}
+	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), events: make(map[string][]domain.AuditEvent)}
 }
 
-func (r *Repository) CreateTransaction(_ context.Context, transaction domain.Transaction, event domain.AuditEvent) error {
+func (r *Repository) CreateTransaction(_ context.Context, transaction domain.Transaction, event domain.AuditEvent, alerts []domain.Alert, alertEvents []domain.AuditEvent) error {
+	if len(alerts) != len(alertEvents) {
+		return errors.New("each alert must have one audit event")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	customer, ok := r.customers[transaction.CustomerID]
@@ -31,7 +35,43 @@ func (r *Repository) CreateTransaction(_ context.Context, transaction domain.Tra
 	}
 	r.transactions[transaction.ID] = transaction
 	r.events[transaction.ID] = append(r.events[transaction.ID], event)
+	for index, alert := range alerts {
+		r.alerts[alert.ID] = alert
+		r.events[alert.ID] = append(r.events[alert.ID], alertEvents[index])
+	}
 	return nil
+}
+
+func (r *Repository) ListAlerts(_ context.Context, status domain.AlertStatus) ([]domain.Alert, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	alerts := make([]domain.Alert, 0, len(r.alerts))
+	for _, alert := range r.alerts {
+		if status == "" || alert.Status == status {
+			alerts = append(alerts, alert)
+		}
+	}
+	return alerts, nil
+}
+
+func (r *Repository) CloseAlert(_ context.Context, alertID, actor, reason string, event domain.AuditEvent) (domain.Alert, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	alert, ok := r.alerts[alertID]
+	if !ok {
+		return domain.Alert{}, domain.ErrAlertNotFound
+	}
+	if alert.Status != domain.AlertOpen {
+		return domain.Alert{}, domain.ErrAlertConflict
+	}
+	alert.Status = domain.AlertClosed
+	closedAt := event.OccurredAt
+	alert.ClosedAt = &closedAt
+	alert.ClosedBy = actor
+	alert.ClosureReason = reason
+	r.alerts[alertID] = alert
+	r.events[alertID] = append(r.events[alertID], event)
+	return alert, nil
 }
 
 func (r *Repository) CreateCustomer(_ context.Context, customer domain.Customer, event domain.AuditEvent) error {

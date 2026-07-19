@@ -134,7 +134,10 @@ func (r *Repository) ReviewCustomer(ctx context.Context, customerID string, deci
 	return customer, nil
 }
 
-func (r *Repository) CreateTransaction(ctx context.Context, transaction domain.Transaction, event domain.AuditEvent) (err error) {
+func (r *Repository) CreateTransaction(ctx context.Context, transaction domain.Transaction, event domain.AuditEvent, alerts []domain.Alert, alertEvents []domain.AuditEvent) (err error) {
+	if len(alerts) != len(alertEvents) {
+		return errors.New("each alert must have one audit event")
+	}
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin ingest transaction: %w", err)
@@ -181,10 +184,128 @@ func (r *Repository) CreateTransaction(ctx context.Context, transaction domain.T
 	if err != nil {
 		return fmt.Errorf("insert transaction audit event: %w", err)
 	}
+	for index, alert := range alerts {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO alerts (
+				id, transaction_id, customer_id, rule_code, rule_version, severity,
+				status, reason_code, description, created_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			alert.ID, alert.TransactionID, alert.CustomerID, alert.RuleCode, alert.RuleVersion,
+			alert.Severity, alert.Status, alert.ReasonCode, alert.Description, alert.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("insert monitoring alert: %w", err)
+		}
+		alertEvent := alertEvents[index]
+		alertPayload, marshalErr := json.Marshal(alertEvent.Payload)
+		if marshalErr != nil {
+			return fmt.Errorf("marshal alert audit payload: %w", marshalErr)
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO audit_events (id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			alertEvent.ID, alertEvent.AggregateType, alertEvent.AggregateID, alertEvent.EventType,
+			alertEvent.Actor, alertEvent.OccurredAt, alertPayload)
+		if err != nil {
+			return fmt.Errorf("insert alert audit event: %w", err)
+		}
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit ingest transaction: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) ListAlerts(ctx context.Context, status domain.AlertStatus) ([]domain.Alert, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, transaction_id, customer_id, rule_code, rule_version, severity,
+			status, reason_code, description, created_at, closed_at, closed_by, closure_reason
+		FROM alerts
+		WHERE $1 = '' OR status = $1
+		ORDER BY created_at DESC, id`, status)
+	if err != nil {
+		return nil, fmt.Errorf("query alerts: %w", err)
+	}
+	defer rows.Close()
+	alerts := make([]domain.Alert, 0)
+	for rows.Next() {
+		alert, err := scanAlert(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan alert: %w", err)
+		}
+		alerts = append(alerts, alert)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate alerts: %w", err)
+	}
+	return alerts, nil
+}
+
+func (r *Repository) CloseAlert(ctx context.Context, alertID, actor, reason string, event domain.AuditEvent) (alert domain.Alert, err error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return domain.Alert{}, fmt.Errorf("begin close alert: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil && rollbackErr != pgx.ErrTxClosed && err == nil {
+			err = fmt.Errorf("rollback close alert: %w", rollbackErr)
+		}
+	}()
+	alert, err = scanAlert(tx.QueryRow(ctx, `
+		UPDATE alerts
+		SET status = 'closed', closed_at = $2, closed_by = $3, closure_reason = $4
+		WHERE id = $1 AND status = 'open'
+		RETURNING id, transaction_id, customer_id, rule_code, rule_version, severity,
+			status, reason_code, description, created_at, closed_at, closed_by, closure_reason`,
+		alertID, event.OccurredAt, actor, reason))
+	if errors.Is(err, pgx.ErrNoRows) {
+		var currentStatus domain.AlertStatus
+		lookupErr := tx.QueryRow(ctx, "SELECT status FROM alerts WHERE id = $1", alertID).Scan(&currentStatus)
+		if errors.Is(lookupErr, pgx.ErrNoRows) {
+			return domain.Alert{}, domain.ErrAlertNotFound
+		}
+		if lookupErr != nil {
+			return domain.Alert{}, fmt.Errorf("inspect alert state: %w", lookupErr)
+		}
+		return domain.Alert{}, domain.ErrAlertConflict
+	}
+	if err != nil {
+		return domain.Alert{}, fmt.Errorf("update alert: %w", err)
+	}
+	payload, err := json.Marshal(event.Payload)
+	if err != nil {
+		return domain.Alert{}, fmt.Errorf("marshal alert closure audit payload: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO audit_events (id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		event.ID, event.AggregateType, event.AggregateID, event.EventType, event.Actor, event.OccurredAt, payload)
+	if err != nil {
+		return domain.Alert{}, fmt.Errorf("insert alert closure audit event: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.Alert{}, fmt.Errorf("commit close alert: %w", err)
+	}
+	return alert, nil
+}
+
+func scanAlert(row scanner) (domain.Alert, error) {
+	var alert domain.Alert
+	var closedBy, closureReason *string
+	err := row.Scan(
+		&alert.ID, &alert.TransactionID, &alert.CustomerID, &alert.RuleCode, &alert.RuleVersion,
+		&alert.Severity, &alert.Status, &alert.ReasonCode, &alert.Description, &alert.CreatedAt,
+		&alert.ClosedAt, &closedBy, &closureReason,
+	)
+	if err != nil {
+		return domain.Alert{}, err
+	}
+	if closedBy != nil {
+		alert.ClosedBy = *closedBy
+	}
+	if closureReason != nil {
+		alert.ClosureReason = *closureReason
+	}
+	return alert, nil
 }
 
 type scanner interface {

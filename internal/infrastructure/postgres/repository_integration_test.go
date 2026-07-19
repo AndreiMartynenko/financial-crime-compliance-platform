@@ -142,7 +142,12 @@ func TestCreateTransactionPersistsTransactionAndAuditEvent(t *testing.T) {
 		ID: "011ece8c-b950-4917-ae3c-e54e40a451b5", AggregateType: "transaction", AggregateID: transaction.ID,
 		EventType: "transaction.ingested", Actor: transaction.IngestedBy, OccurredAt: now, Payload: map[string]any{},
 	}
-	if err := repo.CreateTransaction(ctx, transaction, event); err != nil {
+	alert := testAlert(transaction, now)
+	alertEvent := domain.AuditEvent{
+		ID: "78bc3330-a6c2-4531-aace-32c221333750", AggregateType: "alert", AggregateID: alert.ID,
+		EventType: "alert.created", Actor: "transaction-monitoring-engine", OccurredAt: now, Payload: map[string]any{},
+	}
+	if err := repo.CreateTransaction(ctx, transaction, event, []domain.Alert{alert}, []domain.AuditEvent{alertEvent}); err != nil {
 		t.Fatal(err)
 	}
 	var count int
@@ -155,6 +160,29 @@ func TestCreateTransactionPersistsTransactionAndAuditEvent(t *testing.T) {
 	events, err := repo.ListAuditEvents(ctx, transaction.ID)
 	if err != nil || len(events) != 1 || events[0].AggregateType != "transaction" {
 		t.Fatalf("unexpected transaction events: %+v err=%v", events, err)
+	}
+	alerts, err := repo.ListAlerts(ctx, domain.AlertOpen)
+	if err != nil || len(alerts) != 1 || alerts[0].RuleVersion != domain.TransactionMonitoringRuleVersion {
+		t.Fatalf("unexpected alerts: %+v err=%v", alerts, err)
+	}
+	invalidCloseEvent := domain.AuditEvent{
+		ID: "d5748da6-1c0e-443e-80f9-f67cd7e8c862", AggregateType: "invalid", AggregateID: alert.ID,
+		EventType: "alert.closed", Actor: "reviewer@example.test", OccurredAt: now.Add(time.Second), Payload: map[string]any{},
+	}
+	if _, err := repo.CloseAlert(ctx, alert.ID, invalidCloseEvent.Actor, "reviewed", invalidCloseEvent); err == nil {
+		t.Fatal("expected alert closure audit insert to fail")
+	}
+	alerts, err = repo.ListAlerts(ctx, domain.AlertOpen)
+	if err != nil || len(alerts) != 1 {
+		t.Fatalf("alert closure was not rolled back: alerts=%+v err=%v", alerts, err)
+	}
+	closeEvent := domain.AuditEvent{
+		ID: "dd2ef1ea-cf55-4167-a251-5fcf13f4baf3", AggregateType: "alert", AggregateID: alert.ID,
+		EventType: "alert.closed", Actor: "reviewer@example.test", OccurredAt: now.Add(time.Second), Payload: map[string]any{"reason": "reviewed"},
+	}
+	closed, err := repo.CloseAlert(ctx, alert.ID, closeEvent.Actor, "reviewed", closeEvent)
+	if err != nil || closed.Status != domain.AlertClosed || closed.ClosedBy != closeEvent.Actor {
+		t.Fatalf("closed alert=%+v err=%v", closed, err)
 	}
 }
 
@@ -174,11 +202,16 @@ func TestCreateTransactionRollsBackWhenAuditInsertFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	transaction := testTransaction(customer.ID, now)
-	invalidEvent := domain.AuditEvent{
-		ID: "e5fd3df4-1609-4990-8a3b-b6eb3382b84c", AggregateType: "invalid", AggregateID: transaction.ID,
+	transactionEvent := domain.AuditEvent{
+		ID: "e5fd3df4-1609-4990-8a3b-b6eb3382b84c", AggregateType: "transaction", AggregateID: transaction.ID,
 		EventType: "transaction.ingested", Actor: transaction.IngestedBy, OccurredAt: now, Payload: map[string]any{},
 	}
-	if err := repo.CreateTransaction(ctx, transaction, invalidEvent); err == nil {
+	alert := testAlert(transaction, now)
+	invalidAlertEvent := domain.AuditEvent{
+		ID: "0cbdba0c-18b2-432d-b4b6-c4e94278c92b", AggregateType: "invalid", AggregateID: alert.ID,
+		EventType: "alert.created", Actor: "transaction-monitoring-engine", OccurredAt: now, Payload: map[string]any{},
+	}
+	if err := repo.CreateTransaction(ctx, transaction, transactionEvent, []domain.Alert{alert}, []domain.AuditEvent{invalidAlertEvent}); err == nil {
 		t.Fatal("expected transaction audit insert to fail")
 	}
 	var count int
@@ -187,6 +220,12 @@ func TestCreateTransactionRollsBackWhenAuditInsertFails(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("transaction insert was not rolled back: count=%d", count)
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM alerts WHERE id = $1", alert.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("alert insert was not rolled back: count=%d", count)
 	}
 }
 
@@ -234,13 +273,27 @@ func testTransaction(customerID string, now time.Time) domain.Transaction {
 	}
 }
 
+func testAlert(transaction domain.Transaction, now time.Time) domain.Alert {
+	return domain.Alert{
+		ID: "827f732f-6399-482f-af8b-5d2634251bb6", TransactionID: transaction.ID,
+		CustomerID: transaction.CustomerID, RuleCode: "large_transaction",
+		RuleVersion: domain.TransactionMonitoringRuleVersion, Severity: domain.AlertHigh,
+		Status: domain.AlertOpen, ReasonCode: "amount_threshold_exceeded",
+		Description: "Integration test alert", CreatedAt: now,
+	}
+}
+
 func cleanupCustomer(t *testing.T, pool *pgxpool.Pool, customer domain.Customer) {
 	t.Helper()
+	_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_type = 'alert' AND aggregate_id IN (SELECT id FROM alerts WHERE customer_id = $1)", customer.ID)
+	_, _ = pool.Exec(context.Background(), "DELETE FROM alerts WHERE customer_id = $1", customer.ID)
 	_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_type = 'transaction' AND aggregate_id IN (SELECT id FROM transactions WHERE customer_id = $1)", customer.ID)
 	_, _ = pool.Exec(context.Background(), "DELETE FROM transactions WHERE customer_id = $1", customer.ID)
 	_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_id = $1", customer.ID)
 	_, _ = pool.Exec(context.Background(), "DELETE FROM customers WHERE id = $1 OR external_ref = $2", customer.ID, customer.ExternalRef)
 	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_type = 'alert' AND aggregate_id IN (SELECT id FROM alerts WHERE customer_id = $1)", customer.ID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM alerts WHERE customer_id = $1", customer.ID)
 		_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_type = 'transaction' AND aggregate_id IN (SELECT id FROM transactions WHERE customer_id = $1)", customer.ID)
 		_, _ = pool.Exec(context.Background(), "DELETE FROM transactions WHERE customer_id = $1", customer.ID)
 		_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_id = $1", customer.ID)

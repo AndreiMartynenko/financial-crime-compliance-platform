@@ -128,7 +128,7 @@ func TestIngestTransactionForActiveCustomer(t *testing.T) {
 		t.Fatalf("review status=%d body=%s", reviewResponse.Code, reviewResponse.Body.String())
 	}
 
-	transactionBody := []byte(fmt.Sprintf(`{"external_ref":"PAY-1001","customer_id":%q,"direction":"outbound","amount_minor":125050,"currency":"gbp","counterparty_country":"de","occurred_at":"2026-07-19T12:00:00Z"}`, customer.ID))
+	transactionBody := []byte(fmt.Sprintf(`{"external_ref":"PAY-1001","customer_id":%q,"direction":"outbound","amount_minor":2000000,"currency":"gbp","counterparty_country":"ir","occurred_at":"2026-07-19T12:00:00Z"}`, customer.ID))
 	ingestRequest := httptest.NewRequest(http.MethodPost, "/v1/transactions", bytes.NewReader(transactionBody))
 	ingestRequest.Header.Set("Authorization", "Bearer "+signedToken("payments-analyst@example.test", auth.RoleAnalyst))
 	ingestResponse := httptest.NewRecorder()
@@ -136,16 +136,51 @@ func TestIngestTransactionForActiveCustomer(t *testing.T) {
 	if ingestResponse.Code != http.StatusCreated {
 		t.Fatalf("ingest status=%d body=%s", ingestResponse.Code, ingestResponse.Body.String())
 	}
-	var transaction domain.Transaction
-	if err := json.NewDecoder(ingestResponse.Body).Decode(&transaction); err != nil {
+	var result application.IngestTransactionResult
+	if err := json.NewDecoder(ingestResponse.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
-	if transaction.Currency != "GBP" || transaction.CounterpartyCountry != "DE" || transaction.AmountMinor != 125050 {
+	transaction := result.Transaction
+	if transaction.Currency != "GBP" || transaction.CounterpartyCountry != "IR" || transaction.AmountMinor != 2000000 {
 		t.Fatalf("unexpected transaction: %+v", transaction)
+	}
+	if len(result.Alerts) != 2 || result.Alerts[0].RuleVersion != domain.TransactionMonitoringRuleVersion {
+		t.Fatalf("unexpected alerts: %+v", result.Alerts)
 	}
 	events, err := repo.ListAuditEvents(ingestRequest.Context(), transaction.ID)
 	if err != nil || len(events) != 1 || events[0].EventType != "transaction.ingested" || events[0].AggregateType != "transaction" {
 		t.Fatalf("unexpected transaction events: %+v err=%v", events, err)
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/v1/alerts?status=open", nil)
+	listRequest.Header.Set("Authorization", "Bearer "+signedToken("analyst@example.test", auth.RoleAnalyst))
+	listResponse := httptest.NewRecorder()
+	h.ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	var listed struct {
+		Alerts []domain.Alert `json:"alerts"`
+	}
+	if err := json.NewDecoder(listResponse.Body).Decode(&listed); err != nil || len(listed.Alerts) != 2 {
+		t.Fatalf("listed alerts=%+v err=%v", listed.Alerts, err)
+	}
+
+	alert := result.Alerts[0]
+	closeRequest := httptest.NewRequest(http.MethodPost, "/v1/alerts/"+alert.ID+"/close", bytes.NewReader([]byte(`{"reason":"Reviewed and explained by customer activity"}`)))
+	closeRequest.Header.Set("Authorization", "Bearer "+signedToken("reviewer@example.test", auth.RoleReviewer))
+	closeResponse := httptest.NewRecorder()
+	h.ServeHTTP(closeResponse, closeRequest)
+	if closeResponse.Code != http.StatusOK {
+		t.Fatalf("close status=%d body=%s", closeResponse.Code, closeResponse.Body.String())
+	}
+	var closed domain.Alert
+	if err := json.NewDecoder(closeResponse.Body).Decode(&closed); err != nil || closed.Status != domain.AlertClosed || closed.ClosedBy != "reviewer@example.test" {
+		t.Fatalf("closed alert=%+v err=%v", closed, err)
+	}
+	alertEvents, err := repo.ListAuditEvents(closeRequest.Context(), alert.ID)
+	if err != nil || len(alertEvents) != 2 || alertEvents[1].EventType != "alert.closed" {
+		t.Fatalf("unexpected alert events: %+v err=%v", alertEvents, err)
 	}
 }
 

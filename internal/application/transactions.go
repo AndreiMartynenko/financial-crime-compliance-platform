@@ -9,10 +9,15 @@ import (
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
 )
 
-var ErrInvalidTransaction = errors.New("invalid transaction")
+var (
+	ErrInvalidTransaction = errors.New("invalid transaction")
+	ErrInvalidAlertReview = errors.New("invalid alert review")
+)
 
 type TransactionRepository interface {
-	CreateTransaction(context.Context, domain.Transaction, domain.AuditEvent) error
+	CreateTransaction(context.Context, domain.Transaction, domain.AuditEvent, []domain.Alert, []domain.AuditEvent) error
+	ListAlerts(context.Context, domain.AlertStatus) ([]domain.Alert, error)
+	CloseAlert(context.Context, string, string, string, domain.AuditEvent) (domain.Alert, error)
 }
 
 type IngestTransactionCommand struct {
@@ -31,21 +36,26 @@ type TransactionService struct {
 	now  func() time.Time
 }
 
+type IngestTransactionResult struct {
+	Transaction domain.Transaction `json:"transaction"`
+	Alerts      []domain.Alert     `json:"alerts"`
+}
+
 func NewTransactionService(repo TransactionRepository) *TransactionService {
 	return &TransactionService{repo: repo, now: time.Now}
 }
 
-func (s *TransactionService) Ingest(ctx context.Context, cmd IngestTransactionCommand) (domain.Transaction, error) {
+func (s *TransactionService) Ingest(ctx context.Context, cmd IngestTransactionCommand) (IngestTransactionResult, error) {
 	cmd.ExternalRef = strings.TrimSpace(cmd.ExternalRef)
 	cmd.CustomerID = strings.TrimSpace(cmd.CustomerID)
 	cmd.Currency = strings.ToUpper(strings.TrimSpace(cmd.Currency))
 	cmd.CounterpartyCountry = strings.ToUpper(strings.TrimSpace(cmd.CounterpartyCountry))
 	cmd.Actor = strings.TrimSpace(cmd.Actor)
 	if cmd.CustomerID == "" || cmd.AmountMinor <= 0 || len(cmd.Currency) != 3 || len(cmd.CounterpartyCountry) != 2 || cmd.OccurredAt.IsZero() || cmd.Actor == "" {
-		return domain.Transaction{}, ErrInvalidTransaction
+		return IngestTransactionResult{}, ErrInvalidTransaction
 	}
 	if cmd.Direction != domain.TransactionInbound && cmd.Direction != domain.TransactionOutbound {
-		return domain.Transaction{}, ErrInvalidTransaction
+		return IngestTransactionResult{}, ErrInvalidTransaction
 	}
 
 	now := s.now().UTC()
@@ -55,7 +65,7 @@ func (s *TransactionService) Ingest(ctx context.Context, cmd IngestTransactionCo
 		CounterpartyCountry: cmd.CounterpartyCountry, OccurredAt: cmd.OccurredAt.UTC(),
 		IngestedAt: now, IngestedBy: cmd.Actor,
 	}
-	event := domain.AuditEvent{
+	transactionEvent := domain.AuditEvent{
 		ID: newID(), AggregateType: "transaction", AggregateID: transaction.ID,
 		EventType: "transaction.ingested", Actor: cmd.Actor, OccurredAt: now,
 		Payload: map[string]any{
@@ -63,8 +73,51 @@ func (s *TransactionService) Ingest(ctx context.Context, cmd IngestTransactionCo
 			"currency": transaction.Currency, "direction": transaction.Direction,
 		},
 	}
-	if err := s.repo.CreateTransaction(ctx, transaction, event); err != nil {
-		return domain.Transaction{}, err
+	findings := (domain.TransactionMonitoringEngine{}).Evaluate(transaction)
+	alerts := make([]domain.Alert, 0, len(findings))
+	alertEvents := make([]domain.AuditEvent, 0, len(findings))
+	for _, finding := range findings {
+		alert := domain.Alert{
+			ID: newID(), TransactionID: transaction.ID, CustomerID: transaction.CustomerID,
+			RuleCode: finding.RuleCode, RuleVersion: finding.RuleVersion, Severity: finding.Severity,
+			Status: domain.AlertOpen, ReasonCode: finding.ReasonCode, Description: finding.Description,
+			CreatedAt: now,
+		}
+		alerts = append(alerts, alert)
+		alertEvents = append(alertEvents, domain.AuditEvent{
+			ID: newID(), AggregateType: "alert", AggregateID: alert.ID,
+			EventType: "alert.created", Actor: "transaction-monitoring-engine", OccurredAt: now,
+			Payload: map[string]any{
+				"transaction_id": transaction.ID, "rule_code": alert.RuleCode,
+				"rule_version": alert.RuleVersion, "reason_code": alert.ReasonCode,
+			},
+		})
 	}
-	return transaction, nil
+	if err := s.repo.CreateTransaction(ctx, transaction, transactionEvent, alerts, alertEvents); err != nil {
+		return IngestTransactionResult{}, err
+	}
+	return IngestTransactionResult{Transaction: transaction, Alerts: alerts}, nil
+}
+
+func (s *TransactionService) ListAlerts(ctx context.Context, status domain.AlertStatus) ([]domain.Alert, error) {
+	if status != "" && status != domain.AlertOpen && status != domain.AlertClosed {
+		return nil, ErrInvalidAlertReview
+	}
+	return s.repo.ListAlerts(ctx, status)
+}
+
+func (s *TransactionService) CloseAlert(ctx context.Context, alertID, actor, reason string) (domain.Alert, error) {
+	alertID = strings.TrimSpace(alertID)
+	actor = strings.TrimSpace(actor)
+	reason = strings.TrimSpace(reason)
+	if alertID == "" || actor == "" || reason == "" {
+		return domain.Alert{}, ErrInvalidAlertReview
+	}
+	now := s.now().UTC()
+	event := domain.AuditEvent{
+		ID: newID(), AggregateType: "alert", AggregateID: alertID,
+		EventType: "alert.closed", Actor: actor, OccurredAt: now,
+		Payload: map[string]any{"reason": reason},
+	}
+	return s.repo.CloseAlert(ctx, alertID, actor, reason, event)
 }

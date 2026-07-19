@@ -26,7 +26,56 @@ func NewHandler(service *application.OnboardingService, transactionService *appl
 	mux.Handle("POST /v1/customers/{customer_id}/approve", authenticate(authenticator, requireRoles(h.reviewCustomer(domain.ReviewApprove), auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/customers/{customer_id}/reject", authenticate(authenticator, requireRoles(h.reviewCustomer(domain.ReviewReject), auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/transactions", authenticate(authenticator, requireRoles(h.ingestTransaction, auth.RoleAnalyst, auth.RoleAdmin)))
+	mux.Handle("GET /v1/alerts", authenticate(authenticator, requireRoles(h.listAlerts, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("POST /v1/alerts/{alert_id}/close", authenticate(authenticator, requireRoles(h.closeAlert, auth.RoleReviewer, auth.RoleAdmin)))
 	return requestLogging(logger, mux)
+}
+
+func (h *Handler) listAlerts(w http.ResponseWriter, r *http.Request) {
+	alerts, err := h.transactionService.ListAlerts(r.Context(), domain.AlertStatus(r.URL.Query().Get("status")))
+	if errors.Is(err, application.ErrInvalidAlertReview) {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_alert_filter", "Alert status filter is not valid")
+		return
+	}
+	if err != nil {
+		h.logger.Error("list alerts", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Alerts could not be listed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"alerts": alerts})
+}
+
+func (h *Handler) closeAlert(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var request reviewRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "Request body is not valid")
+		return
+	}
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthenticated", "A valid bearer token is required")
+		return
+	}
+	alert, err := h.transactionService.CloseAlert(r.Context(), r.PathValue("alert_id"), principal.Subject, request.Reason)
+	switch {
+	case errors.Is(err, application.ErrInvalidAlertReview):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_alert_review", "A closure reason is required")
+		return
+	case errors.Is(err, domain.ErrAlertNotFound):
+		writeError(w, http.StatusNotFound, "alert_not_found", "Alert was not found")
+		return
+	case errors.Is(err, domain.ErrAlertConflict):
+		writeError(w, http.StatusConflict, "alert_conflict", "Alert is not open")
+		return
+	case err != nil:
+		h.logger.Error("close alert", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Alert could not be closed")
+		return
+	}
+	writeJSON(w, http.StatusOK, alert)
 }
 
 func (h *Handler) ingestTransaction(w http.ResponseWriter, r *http.Request) {

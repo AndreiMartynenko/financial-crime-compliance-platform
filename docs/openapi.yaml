@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.5.0
-  description: Portfolio API for authenticated customer-risk assessment and financial transaction ingestion with transactional PostgreSQL persistence.
+  version: 0.6.0
+  description: Portfolio API for authenticated customer-risk assessment, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
 paths:
@@ -117,7 +117,7 @@ paths:
           description: Transaction and its audit event were persisted atomically
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/Transaction"}
+              schema: {$ref: "#/components/schemas/TransactionIngestionResult"}
         "400": {description: Malformed JSON}
         "401": {description: Missing, invalid, or expired bearer token}
         "403": {description: Authenticated role cannot ingest transactions}
@@ -125,6 +125,62 @@ paths:
         "409": {description: Customer is not active}
         "422": {description: Transaction validation failed}
         "500": {description: Transaction could not be persisted; the transaction is rolled back}
+  /v1/alerts:
+    get:
+      operationId: listAlerts
+      summary: List monitoring alerts
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: status
+          schema: {type: string, enum: [open, closed]}
+      responses:
+        "200":
+          description: Monitoring alerts ordered newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [alerts]
+                properties:
+                  alerts:
+                    type: array
+                    items: {$ref: "#/components/schemas/Alert"}
+        "401": {description: Missing, invalid, or expired bearer token}
+        "403": {description: Authenticated role cannot view alerts}
+        "422": {description: Invalid status filter}
+        "500": {description: Alerts could not be listed}
+  /v1/alerts/{alert_id}/close:
+    post:
+      operationId: closeAlert
+      summary: Close an open monitoring alert
+      description: Requires the `reviewer` or `admin` role and a closure reason.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: alert_id
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CloseAlert"}
+      responses:
+        "200":
+          description: Alert closed with an atomic audit write
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Alert"}
+        "400": {description: Malformed JSON}
+        "401": {description: Missing, invalid, or expired bearer token}
+        "403": {description: Authenticated role cannot close alerts}
+        "404": {description: Alert not found}
+        "409": {description: Alert is already closed}
+        "422": {description: Closure reason is missing}
+        "500": {description: Alert closure could not be persisted; the transaction is rolled back}
 components:
   parameters:
     CustomerID:
@@ -183,6 +239,36 @@ components:
             id: {type: string, format: uuid}
             ingested_at: {type: string, format: date-time}
             ingested_by: {type: string}
+    TransactionIngestionResult:
+      type: object
+      required: [transaction, alerts]
+      properties:
+        transaction: {$ref: "#/components/schemas/Transaction"}
+        alerts:
+          type: array
+          items: {$ref: "#/components/schemas/Alert"}
+    Alert:
+      type: object
+      required: [id, transaction_id, customer_id, rule_code, rule_version, severity, status, reason_code, description, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        transaction_id: {type: string, format: uuid}
+        customer_id: {type: string, format: uuid}
+        rule_code: {type: string}
+        rule_version: {type: string, example: transaction-monitoring-v1}
+        severity: {type: string, enum: [medium, high]}
+        status: {type: string, enum: [open, closed]}
+        reason_code: {type: string}
+        description: {type: string}
+        created_at: {type: string, format: date-time}
+        closed_at: {type: string, format: date-time}
+        closed_by: {type: string}
+        closure_reason: {type: string}
+    CloseAlert:
+      type: object
+      required: [reason]
+      properties:
+        reason: {type: string, minLength: 1}
     RiskFactors:
       type: object
       required: [country_risk, source_of_funds_verified]
