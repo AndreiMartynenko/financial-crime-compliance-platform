@@ -51,21 +51,29 @@ type header struct {
 }
 
 type Authenticator struct {
-	secret          []byte
-	issuer          string
-	now             func() time.Time
-	jwksURL         string
-	authorizedParty string
-	keysMu          sync.RWMutex
-	keys            map[string]*rsa.PublicKey
-	keysExpiresAt   time.Time
+	secret            []byte
+	issuer            string
+	now               func() time.Time
+	jwksURL           string
+	authorizedParties map[string]struct{}
+	keysMu            sync.RWMutex
+	keys              map[string]*rsa.PublicKey
+	keysExpiresAt     time.Time
 }
 
 func NewJWKSAuthenticator(jwksURL, issuer, authorizedParty string) (*Authenticator, error) {
 	if strings.TrimSpace(jwksURL) == "" || strings.TrimSpace(issuer) == "" || strings.TrimSpace(authorizedParty) == "" {
 		return nil, errors.New("JWT_JWKS_URL, JWT_ISSUER and JWT_AUTHORIZED_PARTY are required")
 	}
-	return &Authenticator{jwksURL: jwksURL, issuer: issuer, authorizedParty: authorizedParty, now: time.Now, keys: make(map[string]*rsa.PublicKey)}, nil
+	authorizedParties := make(map[string]struct{})
+	for _, candidate := range strings.Split(authorizedParty, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return nil, errors.New("JWT_AUTHORIZED_PARTY contains an empty client ID")
+		}
+		authorizedParties[candidate] = struct{}{}
+	}
+	return &Authenticator{jwksURL: jwksURL, issuer: issuer, authorizedParties: authorizedParties, now: time.Now, keys: make(map[string]*rsa.PublicKey)}, nil
 }
 
 func NewAuthenticator(secret, issuer string) (*Authenticator, error) {
@@ -115,7 +123,8 @@ func (a *Authenticator) Authenticate(authorization string) (Principal, error) {
 			}
 		}
 	}
-	if strings.TrimSpace(claims.Subject) == "" || claims.Issuer != a.issuer || claims.ExpiresAt <= now || claims.NotBefore > now || !validRole(role) || (a.authorizedParty != "" && claims.AuthorizedParty != a.authorizedParty) {
+	_, authorizedParty := a.authorizedParties[claims.AuthorizedParty]
+	if strings.TrimSpace(claims.Subject) == "" || claims.Issuer != a.issuer || claims.ExpiresAt <= now || claims.NotBefore > now || !validRole(role) || (len(a.authorizedParties) > 0 && !authorizedParty) {
 		return Principal{}, ErrInvalidToken
 	}
 	return Principal{Subject: claims.Subject, Role: role}, nil

@@ -23,6 +23,9 @@ func TestMetricsMiddlewareRecordsRouteAndRequestID(t *testing.T) {
 	if body := metrics.Body.String(); !strings.Contains(body, `fccp_http_requests_total{method="GET",route="GET /items/{id}",status="201"} 1`) {
 		t.Fatalf("metrics=%s", body)
 	}
+	if body := metrics.Body.String(); !strings.Contains(body, `fccp_http_request_duration_seconds_bucket{method="GET",route="GET /items/{id}",status="201",le="+Inf"} 1`) {
+		t.Fatalf("histogram=%s", body)
+	}
 }
 func TestDeliveryMetrics(t *testing.T) {
 	registry := NewRegistry()

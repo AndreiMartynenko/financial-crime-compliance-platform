@@ -23,6 +23,16 @@
       "redirectUris": ["http://localhost:3000/*"],
       "webOrigins": ["http://localhost:3000"],
       "attributes": {"pkce.code.challenge.method": "S256"}
+    },
+    {
+      "clientId": "fccp-load-test",
+      "name": "FCCP Performance Gate",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "load-test-demo-only",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true
     }
   ],
   "users": [
@@ -55,6 +65,12 @@
       "lastName": "Administrator",
       "credentials": [{"type": "password", "value": "admin-demo-only", "temporary": false}],
       "realmRoles": ["admin"]
+    },
+    {
+      "username": "service-account-fccp-load-test",
+      "enabled": true,
+      "serviceAccountClientId": "fccp-load-test",
+      "realmRoles": ["analyst"]
     }
   ]
 }

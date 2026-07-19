@@ -66,6 +66,14 @@ jobs:
         run: npm audit --audit-level=high
       - name: Validate Compose
         run: docker compose config --quiet
+      - name: Validate Prometheus rules
+        run: |
+          docker run --rm \
+            -v "$PWD/deploy/observability:/etc/fccp:ro" \
+            --entrypoint promtool \
+            prom/prometheus:v2.55.1 check rules /etc/fccp/alerts.yml /etc/fccp/slo.yml
+      - name: Validate performance scenario
+        run: docker run --rm -v "$PWD/tests/load:/scripts:ro" grafana/k6:0.57.0 inspect /scripts/smoke.js
       - name: Build container
         run: docker compose build api web
       - name: Build scan target

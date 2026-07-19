@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Notification channels and preferences
+## Current milestone: SLO and performance release gates
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -102,6 +102,11 @@ Implemented:
 - channel-aware transactional outbox records for webhook and email delivery;
 - SMTP delivery with STARTTLS, authentication, bounded timeouts and existing retry/lease recovery;
 - notification-channel settings in the operations portal.
+- Prometheus HTTP latency histograms with normalized, bounded-cardinality routes;
+- recorded availability and p95 latency service-level indicators;
+- multi-window error-budget burn alerts for a 99.5% availability objective;
+- an authenticated k6 dashboard-read workload and scheduled GitHub performance gate;
+- documented release criteria and initial staging SLOs in `docs/SLO.md`.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -116,6 +121,7 @@ Open the analyst website at [http://localhost:3000](http://localhost:3000). The 
 
 Operational metrics are available at [http://localhost:8080/metrics](http://localhost:8080/metrics), Prometheus at [http://localhost:9090](http://localhost:9090), and the provisioned read-only Grafana dashboard at [http://localhost:3001](http://localhost:3001).
 Distributed traces can be explored in Jaeger at [http://localhost:16686](http://localhost:16686).
+Initial reliability objectives and the authenticated load-test procedure are documented in [`docs/SLO.md`](docs/SLO.md).
 
 The production-like staging manifests and deployment prerequisites are documented in [`deploy/k8s/README.md`](deploy/k8s/README.md). They require an external PostgreSQL database, OIDC provider, Kubernetes cluster and DNS name; no cloud account is provisioned automatically.
 
@@ -160,7 +166,7 @@ Runtime environment variables:
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | no | tracing stays local/no exporter |
 | `JWT_ISSUER` | yes | Keycloak realm URL in Compose |
 | `JWT_JWKS_URL` | yes | internal Keycloak JWKS URL in Compose |
-| `JWT_AUTHORIZED_PARTY` | no | `fccp-web` |
+| `JWT_AUTHORIZED_PARTY` | no | comma-separated authorized OIDC client IDs (`fccp-web` in production) |
 | `POSTGRES_PORT` | Compose only | `5432` |
 | `API_PORT` | Compose only | `8080` |
 | `WEB_PORT` | Compose only | `3000` |
@@ -292,7 +298,7 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Production provider onboarding and SLO validation.
+1. Production screening-provider onboarding.
 2. Release hardening and a polished public demo package.
 3. Timed staging resilience and recovery exercises.
 

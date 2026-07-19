@@ -1,0 +1,56 @@
+name: Performance gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      rate:
+        description: Iterations per second
+        required: false
+        default: "10"
+  schedule:
+    - cron: "30 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  authenticated-load-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start isolated stack
+        run: HTTP_RATE_LIMIT_RPS=200 HTTP_RATE_LIMIT_BURST=400 docker compose up -d --build postgres keycloak jaeger api
+      - name: Wait for readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8080/readyz >/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          docker compose logs api keycloak
+          exit 1
+      - name: Run authenticated performance gate
+        env:
+          FCCP_RATE: ${{ inputs.rate || '10' }}
+        run: |
+          docker run --rm --network host \
+            -e API_URL=http://127.0.0.1:8080 \
+            -e OIDC_TOKEN_URL=http://127.0.0.1:8081/realms/fccp/protocol/openid-connect/token \
+            -e OIDC_CLIENT_ID=fccp-load-test \
+            -e OIDC_CLIENT_SECRET=load-test-demo-only \
+            -e FCCP_RATE \
+            -e FCCP_DURATION=1m \
+            -v "$PWD/tests/load:/scripts:ro" \
+            -v "$RUNNER_TEMP:/results" \
+            grafana/k6:0.57.0 run --summary-export=/results/performance-summary.json /scripts/smoke.js
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-summary
+          path: ${{ runner.temp }}/performance-summary.json
+          if-no-files-found: warn
+      - name: Stack diagnostics
+        if: failure()
+        run: docker compose logs --no-color api keycloak postgres

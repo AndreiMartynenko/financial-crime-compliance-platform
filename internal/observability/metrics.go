@@ -16,7 +16,11 @@ import (
 type httpMetric struct {
 	Count    uint64
 	Duration float64
+	Buckets  []uint64
 }
+
+var httpDurationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
+
 type Registry struct {
 	mu                  sync.RWMutex
 	http                map[string]httpMetric
@@ -95,8 +99,17 @@ func (r *Registry) Middleware(next http.Handler) http.Handler {
 		key := request.Method + "\x00" + route + "\x00" + strconv.Itoa(status)
 		r.mu.Lock()
 		metric := r.http[key]
+		duration := time.Since(started).Seconds()
 		metric.Count++
-		metric.Duration += time.Since(started).Seconds()
+		metric.Duration += duration
+		if metric.Buckets == nil {
+			metric.Buckets = make([]uint64, len(httpDurationBuckets))
+		}
+		for index, boundary := range httpDurationBuckets {
+			if duration <= boundary {
+				metric.Buckets[index]++
+			}
+		}
 		r.http[key] = metric
 		r.mu.Unlock()
 	})
@@ -116,6 +129,8 @@ func (r *Registry) Handler(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	fmt.Fprintln(w, "# HELP fccp_http_requests_total Total HTTP requests.")
 	fmt.Fprintln(w, "# TYPE fccp_http_requests_total counter")
+	fmt.Fprintln(w, "# HELP fccp_http_request_duration_seconds HTTP request duration by route.")
+	fmt.Fprintln(w, "# TYPE fccp_http_request_duration_seconds histogram")
 	keys := make([]string, 0, len(r.http))
 	for key := range r.http {
 		keys = append(keys, key)
@@ -126,6 +141,10 @@ func (r *Registry) Handler(w http.ResponseWriter, request *http.Request) {
 		metric := r.http[key]
 		labels := fmt.Sprintf("method=%q,route=%q,status=%q", parts[0], parts[1], parts[2])
 		fmt.Fprintf(w, "fccp_http_requests_total{%s} %d\n", labels, metric.Count)
+		for index, boundary := range httpDurationBuckets {
+			fmt.Fprintf(w, "fccp_http_request_duration_seconds_bucket{%s,le=%q} %d\n", labels, strconv.FormatFloat(boundary, 'f', -1, 64), metric.Buckets[index])
+		}
+		fmt.Fprintf(w, "fccp_http_request_duration_seconds_bucket{%s,le=%q} %d\n", labels, "+Inf", metric.Count)
 		fmt.Fprintf(w, "fccp_http_request_duration_seconds_sum{%s} %f\n", labels, metric.Duration)
 		fmt.Fprintf(w, "fccp_http_request_duration_seconds_count{%s} %d\n", labels, metric.Count)
 	}

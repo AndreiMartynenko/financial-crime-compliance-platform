@@ -1,0 +1,39 @@
+groups:
+  - name: fccp-slo-recording
+    interval: 30s
+    rules:
+      - record: fccp:sli_requests:rate5m
+        expr: sum(rate(fccp_http_requests_total{route=~".* /v1/.*"}[5m]))
+      - record: fccp:sli_availability:ratio5m
+        expr: 1 - (sum(rate(fccp_http_requests_total{route=~".* /v1/.*",status=~"5.."}[5m])) / clamp_min(sum(rate(fccp_http_requests_total{route=~".* /v1/.*"}[5m])), 0.001))
+      - record: fccp:sli_latency_p95:seconds5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(fccp_http_request_duration_seconds_bucket{route=~".* /v1/.*"}[5m])))
+  - name: fccp-slo-alerts
+    rules:
+      - alert: FCCPAvailabilityErrorBudgetFastBurn
+        expr: |
+          (sum(rate(fccp_http_requests_total{route=~".* /v1/.*",status=~"5.."}[5m])) / clamp_min(sum(rate(fccp_http_requests_total{route=~".* /v1/.*"}[5m])), 0.001) / 0.005 > 14.4)
+          and
+          (sum(rate(fccp_http_requests_total{route=~".* /v1/.*",status=~"5.."}[1h])) / clamp_min(sum(rate(fccp_http_requests_total{route=~".* /v1/.*"}[1h])), 0.001) / 0.005 > 14.4)
+        for: 2m
+        labels: {severity: critical, slo: availability}
+        annotations:
+          summary: FCCP is rapidly consuming its availability error budget
+          description: Both the five-minute and one-hour burn rates exceed 14.4x for the 99.5% availability SLO.
+      - alert: FCCPAvailabilityErrorBudgetSlowBurn
+        expr: |
+          (sum(rate(fccp_http_requests_total{route=~".* /v1/.*",status=~"5.."}[30m])) / clamp_min(sum(rate(fccp_http_requests_total{route=~".* /v1/.*"}[30m])), 0.001) / 0.005 > 6)
+          and
+          (sum(rate(fccp_http_requests_total{route=~".* /v1/.*",status=~"5.."}[6h])) / clamp_min(sum(rate(fccp_http_requests_total{route=~".* /v1/.*"}[6h])), 0.001) / 0.005 > 6)
+        for: 15m
+        labels: {severity: warning, slo: availability}
+        annotations:
+          summary: FCCP is steadily consuming its availability error budget
+          description: Both the thirty-minute and six-hour burn rates exceed 6x for the 99.5% availability SLO.
+      - alert: FCCPLatencySLOBreach
+        expr: histogram_quantile(0.95, sum by (le) (rate(fccp_http_request_duration_seconds_bucket{route=~".* /v1/.*"}[5m]))) > 0.5
+        for: 10m
+        labels: {severity: warning, slo: latency}
+        annotations:
+          summary: FCCP p95 latency is above 500ms
+          description: Authenticated API latency has exceeded the staging objective for ten minutes.

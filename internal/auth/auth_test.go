@@ -79,6 +79,31 @@ func TestAuthenticateWithJWKS(t *testing.T) {
 	}
 }
 
+func TestAuthenticateWithOneOfMultipleAuthorizedParties(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exponent := big.NewInt(int64(privateKey.PublicKey.E)).Bytes()
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(response).Encode(map[string]any{"keys": []map[string]string{{"kid": "test-key", "kty": "RSA", "use": "sig", "n": base64.RawURLEncoding.EncodeToString(privateKey.PublicKey.N.Bytes()), "e": base64.RawURLEncoding.EncodeToString(exponent)}}})
+	}))
+	defer server.Close()
+	authenticator, err := NewJWKSAuthenticator(server.URL, "fccp-test", "fccp-web, fccp-load-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticator.now = func() time.Time { return time.Unix(1_000, 0) }
+	token := rsaTestToken(t, privateKey, `{"sub":"load-test","azp":"fccp-load-test","realm_access":{"roles":["analyst"]},"iss":"fccp-test","exp":1100}`)
+	if _, err := authenticator.Authenticate("Bearer " + token); err != nil {
+		t.Fatal(err)
+	}
+	unauthorizedToken := rsaTestToken(t, privateKey, `{"sub":"load-test","azp":"untrusted-client","realm_access":{"roles":["analyst"]},"iss":"fccp-test","exp":1100}`)
+	if _, err := authenticator.Authenticate("Bearer " + unauthorizedToken); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("unauthorized party error=%v", err)
+	}
+}
+
 func testToken(payload string) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 	body := base64.RawURLEncoding.EncodeToString([]byte(payload))

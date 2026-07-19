@@ -18,6 +18,7 @@ services:
     volumes:
       - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./deploy/observability/slo.yml:/etc/prometheus/slo.yml:ro
 
   grafana:
     image: grafana/grafana:11.4.0
@@ -77,7 +78,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
       JWT_ISSUER: ${OIDC_AUTHORITY:-http://localhost:8081/realms/fccp}
       JWT_JWKS_URL: http://keycloak:8080/realms/fccp/protocol/openid-connect/certs
-      JWT_AUTHORIZED_PARTY: fccp-web
+      JWT_AUTHORIZED_PARTY: ${JWT_AUTHORIZED_PARTY:-fccp-web,fccp-load-test}
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.7.0
