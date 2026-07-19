@@ -48,6 +48,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	workerLease, err := envDuration("SCREENING_JOB_LEASE", 5*time.Minute)
+	if err != nil {
+		return err
+	}
 	address := envString("HTTP_ADDR", ":8080")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -71,6 +75,7 @@ func run(logger *slog.Logger) error {
 	caseService := application.NewCaseService(repo)
 	dueDiligenceService := application.NewDueDiligenceService(repo)
 	screeningService := application.NewScreeningService(repo, screening.DemoProvider{})
+	screeningService.SetLeaseDuration(workerLease)
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go runScreeningWorker(workerCtx, logger, screeningService, workerInterval)

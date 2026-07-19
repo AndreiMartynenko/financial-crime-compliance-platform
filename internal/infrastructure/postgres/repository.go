@@ -948,11 +948,12 @@ func (r *Repository) DispositionScreeningMatch(ctx context.Context, id string, s
 
 func scanScreeningSchedule(row scanner) (domain.ScreeningSchedule, error) {
 	var schedule domain.ScreeningSchedule
-	err := row.Scan(&schedule.CustomerID, &schedule.Enabled, &schedule.IntervalHours, &schedule.NextRunAt, &schedule.LastRunAt, &schedule.LastError, &schedule.UpdatedBy, &schedule.UpdatedAt)
+	err := row.Scan(&schedule.CustomerID, &schedule.Enabled, &schedule.IntervalHours, &schedule.NextRunAt, &schedule.LastRunAt, &schedule.LastError, &schedule.FailureCount, &schedule.LeaseOwner, &schedule.LeaseUntil, &schedule.UpdatedBy, &schedule.UpdatedAt)
 	return schedule, err
 }
 
-const screeningScheduleSelect = `customer_id,enabled,interval_hours,next_run_at,last_run_at,last_error,updated_by,updated_at`
+const screeningScheduleSelect = `customer_id,enabled,interval_hours,next_run_at,last_run_at,last_error,failure_count,COALESCE(lease_owner,''),lease_until,updated_by,updated_at`
+const screeningScheduleReturning = `s.customer_id,s.enabled,s.interval_hours,s.next_run_at,s.last_run_at,s.last_error,s.failure_count,COALESCE(s.lease_owner,''),s.lease_until,s.updated_by,s.updated_at`
 
 func (r *Repository) UpsertScreeningSchedule(ctx context.Context, schedule domain.ScreeningSchedule, event domain.AuditEvent) (stored domain.ScreeningSchedule, err error) {
 	tx, err := r.pool.Begin(ctx)
@@ -960,7 +961,7 @@ func (r *Repository) UpsertScreeningSchedule(ctx context.Context, schedule domai
 		return stored, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	stored, err = scanScreeningSchedule(tx.QueryRow(ctx, `INSERT INTO screening_schedules(customer_id,enabled,interval_hours,next_run_at,updated_by,updated_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(customer_id) DO UPDATE SET enabled=EXCLUDED.enabled,interval_hours=EXCLUDED.interval_hours,next_run_at=EXCLUDED.next_run_at,last_error='',updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at RETURNING `+screeningScheduleSelect, schedule.CustomerID, schedule.Enabled, schedule.IntervalHours, schedule.NextRunAt, schedule.UpdatedBy, schedule.UpdatedAt))
+	stored, err = scanScreeningSchedule(tx.QueryRow(ctx, `INSERT INTO screening_schedules(customer_id,enabled,interval_hours,next_run_at,updated_by,updated_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(customer_id) DO UPDATE SET enabled=EXCLUDED.enabled,interval_hours=EXCLUDED.interval_hours,next_run_at=EXCLUDED.next_run_at,last_error='',failure_count=0,lease_owner=NULL,lease_until=NULL,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at RETURNING `+screeningScheduleSelect, schedule.CustomerID, schedule.Enabled, schedule.IntervalHours, schedule.NextRunAt, schedule.UpdatedBy, schedule.UpdatedAt))
 	if err != nil {
 		return stored, err
 	}
@@ -979,8 +980,8 @@ func (r *Repository) GetScreeningSchedule(ctx context.Context, customerID string
 	}
 	return schedule, err
 }
-func (r *Repository) ListDueScreeningSchedules(ctx context.Context, now time.Time, limit int) ([]domain.ScreeningSchedule, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+screeningScheduleSelect+` FROM screening_schedules WHERE enabled AND next_run_at <= $1 ORDER BY next_run_at LIMIT $2`, now, limit)
+func (r *Repository) ClaimDueScreeningSchedules(ctx context.Context, now time.Time, limit int, owner string, leaseUntil time.Time) ([]domain.ScreeningSchedule, error) {
+	rows, err := r.pool.Query(ctx, `WITH due AS (SELECT customer_id FROM screening_schedules WHERE enabled AND next_run_at <= $1 AND (lease_until IS NULL OR lease_until <= $1) ORDER BY next_run_at FOR UPDATE SKIP LOCKED LIMIT $2) UPDATE screening_schedules s SET lease_owner=$3,lease_until=$4 FROM due WHERE s.customer_id=due.customer_id RETURNING `+screeningScheduleReturning, now, limit, owner, leaseUntil)
 	if err != nil {
 		return nil, err
 	}
@@ -995,8 +996,8 @@ func (r *Repository) ListDueScreeningSchedules(ctx context.Context, now time.Tim
 	}
 	return items, rows.Err()
 }
-func (r *Repository) CompleteScreeningSchedule(ctx context.Context, customerID string, ranAt time.Time, lastError string) error {
-	command, err := r.pool.Exec(ctx, `UPDATE screening_schedules SET last_run_at=$2::timestamptz,last_error=$3,next_run_at=$2::timestamptz+(interval_hours * interval '1 hour'),updated_at=$2::timestamptz WHERE customer_id=$1`, customerID, ranAt, lastError)
+func (r *Repository) CompleteScreeningSchedule(ctx context.Context, customerID, owner string, ranAt, nextRun time.Time, lastError string) error {
+	command, err := r.pool.Exec(ctx, `UPDATE screening_schedules SET last_run_at=$3,last_error=$5,next_run_at=$4,updated_at=$3,failure_count=CASE WHEN $5='' THEN 0 ELSE failure_count+1 END,lease_owner=NULL,lease_until=NULL WHERE customer_id=$1 AND lease_owner=$2`, customerID, owner, ranAt, nextRun, lastError)
 	if err == nil && command.RowsAffected() == 0 {
 		return domain.ErrScreeningScheduleNotFound
 	}

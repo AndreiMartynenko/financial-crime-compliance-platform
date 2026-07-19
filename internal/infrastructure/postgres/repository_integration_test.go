@@ -386,11 +386,21 @@ func TestScreeningPersistsAndDisposesMatchAtomically(t *testing.T) {
 	if err != nil || !storedSchedule.Enabled || storedSchedule.IntervalHours != 24 {
 		t.Fatalf("schedule=%+v err=%v", storedSchedule, err)
 	}
-	due, err := repo.ListDueScreeningSchedules(ctx, now.Add(25*time.Hour), 10)
+	claimAt := now.Add(25 * time.Hour)
+	due, err := repo.ClaimDueScreeningSchedules(ctx, claimAt, 10, "worker-a", claimAt.Add(5*time.Minute))
 	if err != nil || len(due) != 1 {
 		t.Fatalf("due=%+v err=%v", due, err)
 	}
-	if err := repo.CompleteScreeningSchedule(ctx, customer.ID, now.Add(25*time.Hour), ""); err != nil {
+	secondClaim, err := repo.ClaimDueScreeningSchedules(ctx, claimAt, 10, "worker-b", claimAt.Add(5*time.Minute))
+	if err != nil || len(secondClaim) != 0 {
+		t.Fatalf("leased schedule was claimed twice: %+v err=%v", secondClaim, err)
+	}
+	recoveredAt := claimAt.Add(6 * time.Minute)
+	recovered, err := repo.ClaimDueScreeningSchedules(ctx, recoveredAt, 10, "worker-b", recoveredAt.Add(5*time.Minute))
+	if err != nil || len(recovered) != 1 {
+		t.Fatalf("expired lease was not recovered: %+v err=%v", recovered, err)
+	}
+	if err := repo.CompleteScreeningSchedule(ctx, customer.ID, "worker-b", recoveredAt, recoveredAt.Add(24*time.Hour), ""); err != nil {
 		t.Fatal(err)
 	}
 	completedSchedule, err := repo.GetScreeningSchedule(ctx, customer.ID)
@@ -426,8 +436,8 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 9 {
-		t.Fatalf("applied migrations=%d, want 9", migrationCount)
+	if migrationCount != 10 {
+		t.Fatalf("applied migrations=%d, want 10", migrationCount)
 	}
 	return pool
 }

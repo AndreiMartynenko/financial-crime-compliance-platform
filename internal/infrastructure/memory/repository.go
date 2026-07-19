@@ -175,12 +175,14 @@ func (r *Repository) GetScreeningSchedule(_ context.Context, customerID string) 
 	}
 	return schedule, nil
 }
-func (r *Repository) ListDueScreeningSchedules(_ context.Context, now time.Time, limit int) ([]domain.ScreeningSchedule, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+func (r *Repository) ClaimDueScreeningSchedules(_ context.Context, now time.Time, limit int, owner string, leaseUntil time.Time) ([]domain.ScreeningSchedule, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	result := []domain.ScreeningSchedule{}
-	for _, schedule := range r.screeningSchedules {
-		if schedule.Enabled && !schedule.NextRunAt.After(now) {
+	for id, schedule := range r.screeningSchedules {
+		if schedule.Enabled && !schedule.NextRunAt.After(now) && (schedule.LeaseUntil == nil || !schedule.LeaseUntil.After(now)) {
+			schedule.LeaseOwner, schedule.LeaseUntil = owner, &leaseUntil
+			r.screeningSchedules[id] = schedule
 			result = append(result, schedule)
 		}
 	}
@@ -193,16 +195,22 @@ func limitItems[T any](items []T, size int) []T {
 	}
 	return items
 }
-func (r *Repository) CompleteScreeningSchedule(_ context.Context, customerID string, ranAt time.Time, lastError string) error {
+func (r *Repository) CompleteScreeningSchedule(_ context.Context, customerID, owner string, ranAt, nextRun time.Time, lastError string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	schedule, ok := r.screeningSchedules[customerID]
-	if !ok {
+	if !ok || schedule.LeaseOwner != owner {
 		return domain.ErrScreeningScheduleNotFound
 	}
 	schedule.LastRunAt = &ranAt
 	schedule.LastError = lastError
-	schedule.NextRunAt = ranAt.Add(time.Duration(schedule.IntervalHours) * time.Hour)
+	schedule.NextRunAt = nextRun
+	if lastError == "" {
+		schedule.FailureCount = 0
+	} else {
+		schedule.FailureCount++
+	}
+	schedule.LeaseOwner, schedule.LeaseUntil = "", nil
 	schedule.UpdatedAt = ranAt
 	r.screeningSchedules[customerID] = schedule
 	return nil

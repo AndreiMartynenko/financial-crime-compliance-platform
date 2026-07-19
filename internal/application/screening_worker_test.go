@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,13 @@ import (
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/memory"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/screening"
 )
+
+type failingProvider struct{}
+
+func (failingProvider) Name() string { return "failing-provider" }
+func (failingProvider) Screen(context.Context, string) ([]application.ScreeningCandidate, error) {
+	return nil, errors.New("provider unavailable")
+}
 
 func TestScreeningWorkerRunsDueSchedule(t *testing.T) {
 	ctx := context.Background()
@@ -35,5 +43,27 @@ func TestScreeningWorkerRunsDueSchedule(t *testing.T) {
 	completed, err := service.GetSchedule(ctx, customer.ID)
 	if err != nil || completed.LastRunAt == nil || !completed.NextRunAt.After(*completed.LastRunAt) {
 		t.Fatalf("schedule=%+v err=%v", completed, err)
+	}
+}
+
+func TestScreeningWorkerPersistsFailureAndBackoff(t *testing.T) {
+	ctx := context.Background()
+	repo := memory.NewRepository()
+	customer, err := application.NewOnboardingService(repo).Onboard(ctx, application.OnboardCustomerCommand{Type: domain.CustomerIndividual, LegalName: "Retry Customer", CountryCode: "GB", RiskFactors: domain.RiskFactors{CountryRisk: domain.CountryRiskLow, SourceOfFundsVerified: true}, Actor: "analyst"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	schedule := domain.ScreeningSchedule{CustomerID: customer.ID, Enabled: true, IntervalHours: 24, NextRunAt: now.Add(-time.Minute), UpdatedBy: "analyst", UpdatedAt: now}
+	if _, err := repo.UpsertScreeningSchedule(ctx, schedule, domain.AuditEvent{ID: "failure-schedule-event", AggregateType: "customer", AggregateID: customer.ID, EventType: "screening.schedule_updated", Actor: "analyst", OccurredAt: now, Payload: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	service := application.NewScreeningService(repo, failingProvider{})
+	if count, err := service.RunDue(ctx, 10); err == nil || count != 0 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+	failed, err := service.GetSchedule(ctx, customer.ID)
+	if err != nil || failed.FailureCount != 1 || failed.LastError != "provider unavailable" || failed.LeaseUntil != nil || !failed.NextRunAt.After(now) {
+		t.Fatalf("schedule=%+v err=%v", failed, err)
 	}
 }

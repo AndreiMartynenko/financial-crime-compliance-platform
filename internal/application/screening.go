@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
 	"strings"
 	"time"
@@ -28,8 +29,8 @@ type ScreeningRepository interface {
 	DispositionScreeningMatch(context.Context, string, domain.ScreeningMatchStatus, string, string, domain.AuditEvent) (domain.ScreeningMatch, error)
 	UpsertScreeningSchedule(context.Context, domain.ScreeningSchedule, domain.AuditEvent) (domain.ScreeningSchedule, error)
 	GetScreeningSchedule(context.Context, string) (domain.ScreeningSchedule, error)
-	ListDueScreeningSchedules(context.Context, time.Time, int) ([]domain.ScreeningSchedule, error)
-	CompleteScreeningSchedule(context.Context, string, time.Time, string) error
+	ClaimDueScreeningSchedules(context.Context, time.Time, int, string, time.Time) ([]domain.ScreeningSchedule, error)
+	CompleteScreeningSchedule(context.Context, string, string, time.Time, time.Time, string) error
 }
 
 func (s *ScreeningService) ConfigureSchedule(ctx context.Context, customerID string, enabled bool, intervalHours int, actor string) (domain.ScreeningSchedule, error) {
@@ -55,35 +56,66 @@ func (s *ScreeningService) RunDue(ctx context.Context, limit int) (int, error) {
 		limit = 25
 	}
 	now := s.now().UTC()
-	schedules, err := s.repo.ListDueScreeningSchedules(ctx, now, limit)
+	schedules, err := s.repo.ClaimDueScreeningSchedules(ctx, now, limit, s.workerID, now.Add(s.leaseDuration))
 	if err != nil {
 		return 0, err
 	}
 	completed := 0
+	failed := 0
 	for _, schedule := range schedules {
 		_, runErr := s.ScreenCustomer(ctx, schedule.CustomerID, "ongoing-monitoring-worker")
 		errorText := ""
 		if runErr != nil {
 			errorText = runErr.Error()
 		}
-		if err := s.repo.CompleteScreeningSchedule(ctx, schedule.CustomerID, now, errorText); err != nil {
+		nextRun := now.Add(time.Duration(schedule.IntervalHours) * time.Hour)
+		if runErr != nil {
+			nextRun = now.Add(screeningRetryBackoff(schedule.FailureCount + 1))
+		}
+		if err := s.repo.CompleteScreeningSchedule(ctx, schedule.CustomerID, s.workerID, now, nextRun, errorText); err != nil {
 			return completed, err
 		}
 		if runErr == nil {
 			completed++
+		} else {
+			failed++
 		}
+	}
+	if failed > 0 {
+		return completed, fmt.Errorf("%d ongoing screening jobs failed", failed)
 	}
 	return completed, nil
 }
 
+func screeningRetryBackoff(failures int) time.Duration {
+	if failures < 1 {
+		failures = 1
+	}
+	backoff := 5 * time.Minute
+	for i := 1; i < failures && backoff < 24*time.Hour; i++ {
+		backoff *= 2
+	}
+	if backoff > 24*time.Hour {
+		return 24 * time.Hour
+	}
+	return backoff
+}
+
 type ScreeningService struct {
-	repo     ScreeningRepository
-	provider ScreeningProvider
-	now      func() time.Time
+	repo          ScreeningRepository
+	provider      ScreeningProvider
+	now           func() time.Time
+	workerID      string
+	leaseDuration time.Duration
 }
 
 func NewScreeningService(repo ScreeningRepository, provider ScreeningProvider) *ScreeningService {
-	return &ScreeningService{repo: repo, provider: provider, now: time.Now}
+	return &ScreeningService{repo: repo, provider: provider, now: time.Now, workerID: newID(), leaseDuration: 5 * time.Minute}
+}
+func (s *ScreeningService) SetLeaseDuration(duration time.Duration) {
+	if duration > 0 {
+		s.leaseDuration = duration
+	}
 }
 func (s *ScreeningService) ScreenCustomer(ctx context.Context, customerID, actor string) (domain.ScreeningResult, error) {
 	customerID = strings.TrimSpace(customerID)

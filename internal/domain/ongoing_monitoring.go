@@ -14,6 +14,9 @@ type ScreeningSchedule struct {
 	NextRunAt     time.Time  `json:"next_run_at"`
 	LastRunAt     *time.Time `json:"last_run_at,omitempty"`
 	LastError     string     `json:"last_error,omitempty"`
+	FailureCount  int        `json:"failure_count"`
+	LeaseOwner    string     `json:"-"`
+	LeaseUntil    *time.Time `json:"lease_until,omitempty"`
 	UpdatedBy     string     `json:"updated_by"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
