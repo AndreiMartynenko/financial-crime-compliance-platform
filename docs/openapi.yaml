@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.9.0
+  version: 0.10.0
   description: Portfolio API for authenticated customer-risk assessment, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
@@ -120,6 +120,24 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/AuditEventPage"}
+  /v1/customers/{customer_id}/activity:
+    get:
+      operationId: listCustomerActivity
+      summary: List the unified customer activity stream
+      description: Returns audit events for the customer and every related transaction, alert and investigation case.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/CustomerID"}
+        - {$ref: "#/components/parameters/PageSize"}
+        - {$ref: "#/components/parameters/PageToken"}
+      responses:
+        "200":
+          description: Stable cursor-paginated Customer 360 activity
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuditEventPage"}
+        "404": {description: Customer not found}
+        "422": {description: Invalid pagination cursor}
   /v1/customers/{customer_id}/approve:
     post:
       operationId: approveCustomer

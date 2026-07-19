@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Investigation case management
+## Current milestone: Customer 360 and audit explorer
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -47,7 +47,10 @@ Implemented:
 - alert-linked investigation cases with priority, assignment and lifecycle status;
 - investigator comments and an immutable case audit timeline;
 - atomic case resolution, linked-alert closure and dual audit-event persistence;
-- a role-aware investigation workspace in the React operations portal.
+- a role-aware investigation workspace in the React operations portal;
+- a unified customer activity stream spanning customer, transaction, alert and case events;
+- Customer 360 views with explainable risk reasons, linked work and transaction history;
+- a filterable audit explorer for reconstructing the complete customer lifecycle.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 

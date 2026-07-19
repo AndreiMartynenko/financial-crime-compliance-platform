@@ -299,6 +299,19 @@ func TestCaseResolutionClosesAlertAtomically(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT status FROM alerts WHERE id=$1", alert.ID).Scan(&alertStatus); err != nil || alertStatus != domain.AlertClosed {
 		t.Fatalf("linked alert status=%s err=%v", alertStatus, err)
 	}
+	activity, err := repo.ListCustomerActivityPage(ctx, customer.ID, application.PageRequest{Limit: 100})
+	if err != nil || len(activity) != 6 {
+		t.Fatalf("customer activity=%+v err=%v", activity, err)
+	}
+	types := map[string]bool{}
+	for _, event := range activity {
+		types[event.AggregateType] = true
+	}
+	for _, kind := range []string{"customer", "transaction", "alert", "case"} {
+		if !types[kind] {
+			t.Fatalf("activity missing %s", kind)
+		}
+	}
 }
 
 func containsAlert(alerts []domain.Alert, id string, status domain.AlertStatus) bool {

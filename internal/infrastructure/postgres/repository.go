@@ -469,6 +469,41 @@ func (r *Repository) ListAuditEventsPage(ctx context.Context, aggregateID string
 	return items, rows.Err()
 }
 
+func (r *Repository) ListCustomerActivityPage(ctx context.Context, customerID string, page application.PageRequest) ([]domain.AuditEvent, error) {
+	var exists bool
+	if err := r.pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM customers WHERE id=$1)", customerID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, domain.ErrCustomerNotFound
+	}
+	rows, err := r.pool.Query(ctx, `SELECT id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload
+		FROM audit_events WHERE (
+			(aggregate_type='customer' AND aggregate_id=$1) OR
+			(aggregate_type='transaction' AND aggregate_id IN (SELECT id FROM transactions WHERE customer_id=$1)) OR
+			(aggregate_type='alert' AND aggregate_id IN (SELECT id FROM alerts WHERE customer_id=$1)) OR
+			(aggregate_type='case' AND aggregate_id IN (SELECT id FROM investigation_cases WHERE customer_id=$1))
+		) AND (NOT $2 OR (occurred_at,id)<($3,$4::uuid))
+		ORDER BY occurred_at DESC,id DESC LIMIT $5`, customerID, !page.CursorTime.IsZero(), page.CursorTime, nullableCursorID(page.CursorID), page.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list customer activity: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.AuditEvent, 0)
+	for rows.Next() {
+		var item domain.AuditEvent
+		var payload []byte
+		if err := rows.Scan(&item.ID, &item.AggregateType, &item.AggregateID, &item.EventType, &item.Actor, &item.OccurredAt, &payload); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(payload, &item.Payload); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (r *Repository) ListAlertsPage(ctx context.Context, status domain.AlertStatus, page application.PageRequest) ([]domain.Alert, error) {
 	rows, err := r.pool.Query(ctx, `SELECT id, transaction_id, customer_id, rule_code, rule_version, severity,
 		status, reason_code, description, created_at, closed_at, closed_by, closure_reason FROM alerts

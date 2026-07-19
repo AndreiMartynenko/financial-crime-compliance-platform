@@ -28,6 +28,7 @@ type ReadRepository interface {
 	ListCustomers(context.Context, domain.CustomerStatus, PageRequest) ([]domain.Customer, error)
 	ListCustomerTransactions(context.Context, string, PageRequest) ([]domain.Transaction, error)
 	ListAuditEventsPage(context.Context, string, PageRequest) ([]domain.AuditEvent, error)
+	ListCustomerActivityPage(context.Context, string, PageRequest) ([]domain.AuditEvent, error)
 	ListAlertsPage(context.Context, domain.AlertStatus, PageRequest) ([]domain.Alert, error)
 	ListCasesPage(context.Context, domain.CaseStatus, PageRequest) ([]domain.InvestigationCase, error)
 }
@@ -96,6 +97,14 @@ func (s *QueryService) ListTransactions(ctx context.Context, customerID string, 
 
 func (s *QueryService) ListAuditEvents(ctx context.Context, aggregateID string, request PageRequest) (Page[domain.AuditEvent], error) {
 	items, err := s.repo.ListAuditEventsPage(ctx, aggregateID, request)
+	return page(items, request.Limit, func(v domain.AuditEvent) (time.Time, string) { return v.OccurredAt, v.ID }), err
+}
+
+func (s *QueryService) ListCustomerActivity(ctx context.Context, customerID string, request PageRequest) (Page[domain.AuditEvent], error) {
+	if customerID == "" {
+		return Page[domain.AuditEvent]{}, domain.ErrCustomerNotFound
+	}
+	items, err := s.repo.ListCustomerActivityPage(ctx, customerID, request)
 	return page(items, request.Limit, func(v domain.AuditEvent) (time.Time, string) { return v.OccurredAt, v.ID }), err
 }
 

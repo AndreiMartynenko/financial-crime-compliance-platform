@@ -38,6 +38,7 @@ func NewHandler(service *application.OnboardingService, transactionService *appl
 	mux.Handle("GET /v1/customers/{customer_id}", authenticate(authenticator, requireRoles(h.getCustomer, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("GET /v1/customers/{customer_id}/transactions", authenticate(authenticator, requireRoles(h.listCustomerTransactions, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("GET /v1/customers/{customer_id}/audit-events", authenticate(authenticator, requireRoles(h.listAuditEvents, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("GET /v1/customers/{customer_id}/activity", authenticate(authenticator, requireRoles(h.listCustomerActivity, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/customers/{customer_id}/approve", authenticate(authenticator, requireRoles(h.reviewCustomer(domain.ReviewApprove), auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/customers/{customer_id}/reject", authenticate(authenticator, requireRoles(h.reviewCustomer(domain.ReviewReject), auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/transactions", authenticate(authenticator, requireRoles(h.ingestTransaction, auth.RoleAnalyst, auth.RoleAdmin)))
@@ -239,6 +240,23 @@ func (h *Handler) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 	result, err := h.queryService.ListAuditEvents(r.Context(), r.PathValue("customer_id"), page)
 	if err != nil {
 		h.readError(w, "list audit events", err)
+		return
+	}
+	writeJSON(w, 200, result)
+}
+func (h *Handler) listCustomerActivity(w http.ResponseWriter, r *http.Request) {
+	page, err := pageRequest(r)
+	if err != nil {
+		writeError(w, 422, "invalid_page", "Pagination parameters are invalid")
+		return
+	}
+	result, err := h.queryService.ListCustomerActivity(r.Context(), r.PathValue("customer_id"), page)
+	if errors.Is(err, domain.ErrCustomerNotFound) {
+		writeError(w, 404, "customer_not_found", "Customer was not found")
+		return
+	}
+	if err != nil {
+		h.readError(w, "list customer activity", err)
 		return
 	}
 	writeJSON(w, 200, result)

@@ -312,6 +312,23 @@ func TestInvestigationCaseWorkflow(t *testing.T) {
 	if len(alerts) != 0 {
 		t.Fatalf("expected linked alert to be closed, open=%+v", alerts)
 	}
+	activityRequest := httptest.NewRequest(http.MethodGet, "/v1/customers/"+customer.ID+"/activity?page_size=100", nil)
+	activityRequest.Header.Set("Authorization", "Bearer "+signedToken("analyst@example.test", auth.RoleAnalyst))
+	activityResponse := httptest.NewRecorder()
+	h.ServeHTTP(activityResponse, activityRequest)
+	var activity application.Page[domain.AuditEvent]
+	if err := json.NewDecoder(activityResponse.Body).Decode(&activity); err != nil || len(activity.Items) < 8 {
+		t.Fatalf("activity=%+v err=%v", activity, err)
+	}
+	types := map[string]bool{}
+	for _, event := range activity.Items {
+		types[event.AggregateType] = true
+	}
+	for _, kind := range []string{"customer", "transaction", "alert", "case"} {
+		if !types[kind] {
+			t.Fatalf("activity missing %s events: %+v", kind, activity.Items)
+		}
+	}
 }
 
 func TestListCustomersUsesCursorPagination(t *testing.T) {

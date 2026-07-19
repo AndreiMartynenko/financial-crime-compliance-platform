@@ -71,6 +71,40 @@ func (r *Repository) ListAuditEventsPage(_ context.Context, aggregateID string, 
 	return limit(items, page.Limit), nil
 }
 
+func (r *Repository) ListCustomerActivityPage(_ context.Context, customerID string, page application.PageRequest) ([]domain.AuditEvent, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.customers[customerID]; !ok {
+		return nil, domain.ErrCustomerNotFound
+	}
+	related := map[string]bool{customerID: true}
+	for _, transaction := range r.transactions {
+		if transaction.CustomerID == customerID {
+			related[transaction.ID] = true
+		}
+	}
+	for _, alert := range r.alerts {
+		if alert.CustomerID == customerID {
+			related[alert.ID] = true
+		}
+	}
+	for _, item := range r.cases {
+		if item.CustomerID == customerID {
+			related[item.ID] = true
+		}
+	}
+	items := make([]domain.AuditEvent, 0)
+	for aggregateID := range related {
+		for _, event := range r.events[aggregateID] {
+			if before(event.OccurredAt, event.ID, page) {
+				items = append(items, event)
+			}
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return newer(items[i].OccurredAt, items[i].ID, items[j].OccurredAt, items[j].ID) })
+	return limit(items, page.Limit), nil
+}
+
 func (r *Repository) ListAlertsPage(_ context.Context, status domain.AlertStatus, page application.PageRequest) ([]domain.Alert, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
