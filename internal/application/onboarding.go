@@ -16,6 +16,7 @@ var ErrInvalidCustomer = errors.New("invalid customer")
 type Repository interface {
 	CreateCustomer(context.Context, domain.Customer, domain.AuditEvent) error
 	ListAuditEvents(context.Context, string) ([]domain.AuditEvent, error)
+	ReviewCustomer(context.Context, string, domain.ReviewDecision, string, domain.AuditEvent) (domain.Customer, error)
 }
 
 type OnboardCustomerCommand struct {
@@ -59,12 +60,12 @@ func (s *OnboardingService) Onboard(ctx context.Context, cmd OnboardCustomerComm
 	}
 	actor := strings.TrimSpace(cmd.Actor)
 	if actor == "" {
-		actor = "anonymous-api-user"
+		return domain.Customer{}, ErrInvalidCustomer
 	}
 	event := domain.AuditEvent{
 		ID:          newID(),
 		AggregateID: customer.ID,
-		EventType:   "customer.onboarded",
+		EventType:   "customer.submitted",
 		Actor:       actor,
 		OccurredAt:  now,
 		Payload: map[string]any{
@@ -74,10 +75,31 @@ func (s *OnboardingService) Onboard(ctx context.Context, cmd OnboardCustomerComm
 			"rule_version":  customer.RiskAssessment.RuleVersion,
 		},
 	}
+	customer.Status = domain.CustomerPendingApproval
+	customer.CreatedBy = actor
 	if err := s.repo.CreateCustomer(ctx, customer, event); err != nil {
 		return domain.Customer{}, err
 	}
 	return customer, nil
+}
+
+func (s *OnboardingService) Review(ctx context.Context, customerID string, decision domain.ReviewDecision, actor, reason string) (domain.Customer, error) {
+	customerID = strings.TrimSpace(customerID)
+	actor = strings.TrimSpace(actor)
+	reason = strings.TrimSpace(reason)
+	if customerID == "" || actor == "" || (decision != domain.ReviewApprove && decision != domain.ReviewReject) {
+		return domain.Customer{}, ErrInvalidCustomer
+	}
+	now := s.now().UTC()
+	eventType := "customer.approved"
+	if decision == domain.ReviewReject {
+		eventType = "customer.rejected"
+	}
+	event := domain.AuditEvent{
+		ID: newID(), AggregateID: customerID, EventType: eventType,
+		Actor: actor, OccurredAt: now, Payload: map[string]any{"reason": reason},
+	}
+	return s.repo.ReviewCustomer(ctx, customerID, decision, actor, event)
 }
 
 func newID() string {

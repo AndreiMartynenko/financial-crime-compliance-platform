@@ -1,6 +1,15 @@
 package domain
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+var (
+	ErrCustomerNotFound  = errors.New("customer not found")
+	ErrReviewConflict    = errors.New("customer is not pending approval")
+	ErrMakerCannotReview = errors.New("maker cannot review own customer")
+)
 
 type CustomerType string
 
@@ -31,6 +40,21 @@ const (
 	DueDiligenceStandard DueDiligence = "standard"
 	DueDiligenceEnhanced DueDiligence = "enhanced"
 	DueDiligenceBlocked  DueDiligence = "blocked_pending_review"
+)
+
+type CustomerStatus string
+
+const (
+	CustomerPendingApproval CustomerStatus = "pending_approval"
+	CustomerActive          CustomerStatus = "active"
+	CustomerRejected        CustomerStatus = "rejected"
+)
+
+type ReviewDecision string
+
+const (
+	ReviewApprove ReviewDecision = "approve"
+	ReviewReject  ReviewDecision = "reject"
 )
 
 type RiskFactors struct {
@@ -65,6 +89,10 @@ type Customer struct {
 	CountryCode    string         `json:"country_code"`
 	RiskFactors    RiskFactors    `json:"risk_factors"`
 	RiskAssessment RiskAssessment `json:"risk_assessment"`
+	Status         CustomerStatus `json:"status"`
+	CreatedBy      string         `json:"created_by"`
+	ReviewedBy     string         `json:"reviewed_by,omitempty"`
+	ReviewedAt     *time.Time     `json:"reviewed_at,omitempty"`
 	CreatedAt      time.Time      `json:"created_at"`
 }
 

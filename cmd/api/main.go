@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/application"
+	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/auth"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/postgres"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/transport/httpapi"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/migrations"
@@ -29,6 +30,10 @@ func run(logger *slog.Logger) error {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		return fmt.Errorf("DATABASE_URL is required")
+	}
+	authenticator, err := auth.NewAuthenticator(os.Getenv("JWT_SECRET"), envString("JWT_ISSUER", "financial-crime-compliance-platform"))
+	if err != nil {
+		return fmt.Errorf("configure authentication: %w", err)
 	}
 	readHeaderTimeout, err := envDuration("HTTP_READ_HEADER_TIMEOUT", 5*time.Second)
 	if err != nil {
@@ -56,7 +61,7 @@ func run(logger *slog.Logger) error {
 
 	repo := postgres.NewRepository(pool)
 	service := application.NewOnboardingService(repo)
-	handler := httpapi.NewHandler(service, logger)
+	handler := httpapi.NewHandler(service, logger, authenticator)
 
 	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
 	serverErrors := make(chan error, 1)

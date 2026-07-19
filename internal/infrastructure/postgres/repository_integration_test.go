@@ -42,6 +42,22 @@ func TestCreateCustomerPersistsCustomerAndAuditEvent(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("customer count = %d, want 1", count)
 	}
+	reviewEvent := domain.AuditEvent{
+		ID: "38019ab2-50f4-4d53-a45a-e1bf34065c72", AggregateID: customer.ID,
+		EventType: "customer.approved", Actor: "checker@example.test", OccurredAt: now.Add(time.Second),
+		Payload: map[string]any{"reason": "verified"},
+	}
+	reviewed, err := repo.ReviewCustomer(ctx, customer.ID, domain.ReviewApprove, reviewEvent.Actor, reviewEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.Status != domain.CustomerActive || reviewed.ReviewedBy != reviewEvent.Actor {
+		t.Fatalf("unexpected review state: %+v", reviewed)
+	}
+	events, err = repo.ListAuditEvents(ctx, customer.ID)
+	if err != nil || len(events) != 2 || events[1].EventType != "customer.approved" {
+		t.Fatalf("unexpected review audit events: %+v err=%v", events, err)
+	}
 }
 
 func TestCreateCustomerRollsBackWhenAuditInsertFails(t *testing.T) {
@@ -70,6 +86,38 @@ func TestCreateCustomerRollsBackWhenAuditInsertFails(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatal(errors.New("customer insert was not rolled back"))
+	}
+}
+
+func TestReviewCustomerRollsBackWhenAuditInsertFails(t *testing.T) {
+	ctx := context.Background()
+	pool := integrationPool(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	customer := testCustomer(now)
+	cleanupCustomer(t, pool, customer)
+	createdEvent := domain.AuditEvent{
+		ID: "ea6bd4bf-6009-45d4-8769-e37b2044775b", AggregateID: customer.ID,
+		EventType: "customer.submitted", Actor: customer.CreatedBy, OccurredAt: now, Payload: map[string]any{},
+	}
+	repo := NewRepository(pool)
+	if err := repo.CreateCustomer(ctx, customer, createdEvent); err != nil {
+		t.Fatal(err)
+	}
+	failedReviewEvent := domain.AuditEvent{
+		ID:          createdEvent.ID, // Duplicate primary key forces the audit insert to fail after the status update.
+		AggregateID: customer.ID, EventType: "customer.approved", Actor: "checker@example.test",
+		OccurredAt: now.Add(time.Second), Payload: map[string]any{},
+	}
+	if _, err := repo.ReviewCustomer(ctx, customer.ID, domain.ReviewApprove, failedReviewEvent.Actor, failedReviewEvent); err == nil {
+		t.Fatal("expected review audit insert to fail")
+	}
+	var status domain.CustomerStatus
+	var reviewedBy *string
+	if err := pool.QueryRow(ctx, "SELECT status, reviewed_by FROM customers WHERE id = $1", customer.ID).Scan(&status, &reviewedBy); err != nil {
+		t.Fatal(err)
+	}
+	if status != domain.CustomerPendingApproval || reviewedBy != nil {
+		t.Fatalf("review update was not rolled back: status=%s reviewed_by=%v", status, reviewedBy)
 	}
 }
 
@@ -102,6 +150,8 @@ func testCustomer(now time.Time) domain.Customer {
 			Rating: domain.RiskLow, DueDiligence: domain.DueDiligenceStandard,
 			Reasons: []domain.RiskReason{}, AssessedAt: now, RuleVersion: "test",
 		},
+		Status:    domain.CustomerPendingApproval,
+		CreatedBy: "maker@example.test",
 		CreatedAt: now,
 	}
 }

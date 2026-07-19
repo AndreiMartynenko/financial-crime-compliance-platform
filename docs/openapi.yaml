@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.2.0
-  description: Portfolio API for explainable AML/KYC customer-risk assessment with transactional PostgreSQL persistence.
+  version: 0.4.0
+  description: Portfolio API for authenticated, maker-checker controlled AML/KYC customer-risk assessment with transactional PostgreSQL persistence.
 servers:
   - url: http://localhost:8080
 paths:
@@ -16,12 +16,9 @@ paths:
     post:
       operationId: onboardCustomer
       summary: Onboard and risk-assess a customer
-      parameters:
-        - in: header
-          name: X-Actor-ID
-          required: false
-          schema: {type: string}
-          description: Identity recorded in the audit event.
+      description: Requires the `analyst` or `admin` role. The JWT subject is recorded as the audit actor.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -30,12 +27,22 @@ paths:
               $ref: "#/components/schemas/OnboardCustomer"
       responses:
         "201":
-          description: Customer created and assessed
+          description: Customer created, assessed, and submitted for independent approval
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Customer"
         "400": {description: Malformed JSON}
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "403":
+          description: Authenticated role is not allowed to onboard customers
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
         "422": {description: Customer validation failed}
         "500":
           description: Customer and audit event could not be persisted; the transaction is rolled back
@@ -43,7 +50,69 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/customers/{customer_id}/approve:
+    post:
+      operationId: approveCustomer
+      summary: Approve a pending customer
+      description: Requires the `reviewer` or `admin` role. The original maker cannot approve their own submission.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CustomerID"
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ReviewCustomer"}
+      responses:
+        "200":
+          description: Customer approved and activated
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Customer"}
+        "400": {description: Malformed JSON}
+        "401": {description: Missing, invalid, or expired bearer token}
+        "403": {description: Authenticated role cannot review customers}
+        "404": {description: Customer not found}
+        "409": {description: Maker-checker violation or customer is no longer pending}
+        "500": {description: Review could not be persisted; the transaction is rolled back}
+  /v1/customers/{customer_id}/reject:
+    post:
+      operationId: rejectCustomer
+      summary: Reject a pending customer
+      description: Requires the `reviewer` or `admin` role. The original maker cannot reject their own submission.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CustomerID"
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ReviewCustomer"}
+      responses:
+        "200":
+          description: Customer rejected
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Customer"}
+        "400": {description: Malformed JSON}
+        "401": {description: Missing, invalid, or expired bearer token}
+        "403": {description: Authenticated role cannot review customers}
+        "404": {description: Customer not found}
+        "409": {description: Maker-checker violation or customer is no longer pending}
+        "500": {description: Review could not be persisted; the transaction is rolled back}
 components:
+  parameters:
+    CustomerID:
+      in: path
+      name: customer_id
+      required: true
+      schema: {type: string, format: uuid}
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: HS256 JWT containing `sub`, `role`, `iss`, and `exp`. Supported roles are analyst, reviewer, and admin.
   schemas:
     Error:
       type: object
@@ -65,6 +134,10 @@ components:
         country_code: {type: string, minLength: 2, maxLength: 2}
         risk_factors:
           $ref: "#/components/schemas/RiskFactors"
+    ReviewCustomer:
+      type: object
+      properties:
+        reason: {type: string}
     RiskFactors:
       type: object
       required: [country_risk, source_of_funds_verified]
@@ -77,13 +150,17 @@ components:
         source_of_funds_verified: {type: boolean}
     Customer:
       type: object
-      required: [id, type, legal_name, country_code, risk_factors, risk_assessment, created_at]
+      required: [id, type, legal_name, country_code, risk_factors, risk_assessment, status, created_by, created_at]
       properties:
         id: {type: string, format: uuid}
         external_ref: {type: string}
         type: {type: string, enum: [individual, company]}
         legal_name: {type: string}
         country_code: {type: string}
+        status: {type: string, enum: [pending_approval, active, rejected]}
+        created_by: {type: string}
+        reviewed_by: {type: string}
+        reviewed_at: {type: string, format: date-time}
         risk_factors: {$ref: "#/components/schemas/RiskFactors"}
         risk_assessment:
           type: object

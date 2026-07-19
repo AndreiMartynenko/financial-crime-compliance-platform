@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
@@ -30,4 +31,32 @@ func (r *Repository) ListAuditEvents(_ context.Context, customerID string) ([]do
 	defer r.mu.RUnlock()
 	events := r.events[customerID]
 	return append([]domain.AuditEvent(nil), events...), nil
+}
+
+func (r *Repository) ReviewCustomer(_ context.Context, customerID string, decision domain.ReviewDecision, actor string, event domain.AuditEvent) (domain.Customer, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	customer, ok := r.customers[customerID]
+	if !ok {
+		return domain.Customer{}, domain.ErrCustomerNotFound
+	}
+	if customer.CreatedBy == actor {
+		return domain.Customer{}, domain.ErrMakerCannotReview
+	}
+	if customer.Status != domain.CustomerPendingApproval {
+		return domain.Customer{}, domain.ErrReviewConflict
+	}
+	if decision == domain.ReviewApprove {
+		customer.Status = domain.CustomerActive
+	} else if decision == domain.ReviewReject {
+		customer.Status = domain.CustomerRejected
+	} else {
+		return domain.Customer{}, errors.New("invalid review decision")
+	}
+	customer.ReviewedBy = actor
+	reviewedAt := event.OccurredAt
+	customer.ReviewedAt = &reviewedAt
+	r.customers[customerID] = customer
+	r.events[customerID] = append(r.events[customerID], event)
+	return customer, nil
 }
