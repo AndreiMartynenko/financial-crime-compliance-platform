@@ -1,0 +1,60 @@
+{
+  "realm": "fccp",
+  "enabled": true,
+  "sslRequired": "none",
+  "displayName": "Financial Crime Compliance Platform",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "roles": {
+    "realm": [
+      {"name": "analyst", "description": "Create customers and ingest transactions"},
+      {"name": "reviewer", "description": "Approve customers and close alerts"},
+      {"name": "admin", "description": "Administrative compliance operator"}
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "fccp-web",
+      "name": "FCCP Operations Portal",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:3000/*"],
+      "webOrigins": ["http://localhost:3000"],
+      "attributes": {"pkce.code.challenge.method": "S256"}
+    }
+  ],
+  "users": [
+    {
+      "username": "analyst",
+      "enabled": true,
+      "email": "analyst@example.test",
+      "emailVerified": true,
+      "firstName": "Amelia",
+      "lastName": "Analyst",
+      "credentials": [{"type": "password", "value": "analyst-demo-only", "temporary": false}],
+      "realmRoles": ["analyst"]
+    },
+    {
+      "username": "reviewer",
+      "enabled": true,
+      "email": "reviewer@example.test",
+      "emailVerified": true,
+      "firstName": "Ravi",
+      "lastName": "Reviewer",
+      "credentials": [{"type": "password", "value": "reviewer-demo-only", "temporary": false}],
+      "realmRoles": ["reviewer"]
+    },
+    {
+      "username": "administrator",
+      "enabled": true,
+      "email": "admin@example.test",
+      "emailVerified": true,
+      "firstName": "Ada",
+      "lastName": "Administrator",
+      "credentials": [{"type": "password", "value": "admin-demo-only", "temporary": false}],
+      "realmRoles": ["admin"]
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.7.0
+  version: 0.8.0
   description: Portfolio API for authenticated customer-risk assessment, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
@@ -283,7 +283,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: HS256 JWT containing `sub`, `role`, `iss`, and `exp`. Supported roles are analyst, reviewer, and admin.
+      description: RS256 access token issued through OIDC Authorization Code + PKCE. The API validates JWKS signature, issuer, authorized party, expiry and realm roles.
   schemas:
     Error:
       type: object

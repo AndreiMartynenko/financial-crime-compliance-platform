@@ -20,7 +20,7 @@ Implemented:
 - PostgreSQL-backed runtime and Docker packaging;
 - atomic customer and audit-event writes in one database transaction;
 - embedded, idempotent schema migration at startup;
-- HS256 bearer-token authentication with issuer and expiry validation;
+- OIDC Authorization Code + PKCE login with RS256/JWKS token validation;
 - role-based authorization for `analyst`, `reviewer` and `admin`;
 - audit actors derived from the authenticated JWT subject rather than a caller-supplied identity header;
 - customer submissions held in `pending_approval` until independent review;
@@ -57,7 +57,8 @@ The API applies the embedded SQL migration when it starts. For running the API o
 
 ```bash
 DATABASE_URL='postgres://financial_crime:local_development_only@localhost:5432/financial_crime?sslmode=disable' \
-JWT_SECRET='replace-with-at-least-32-random-characters' \
+JWT_ISSUER='http://localhost:8081/realms/fccp' \
+JWT_JWKS_URL='http://localhost:8081/realms/fccp/protocol/openid-connect/certs' \
 go run ./cmd/api
 ```
 
@@ -69,11 +70,13 @@ Runtime environment variables:
 | `HTTP_ADDR` | no | `:8080` |
 | `HTTP_READ_HEADER_TIMEOUT` | no | `5s` |
 | `HTTP_SHUTDOWN_TIMEOUT` | no | `10s` |
-| `JWT_SECRET` | yes | none outside Compose |
-| `JWT_ISSUER` | no | `financial-crime-compliance-platform` |
+| `JWT_ISSUER` | yes | Keycloak realm URL in Compose |
+| `JWT_JWKS_URL` | yes | internal Keycloak JWKS URL in Compose |
+| `JWT_AUTHORIZED_PARTY` | no | `fccp-web` |
 | `POSTGRES_PORT` | Compose only | `5432` |
 | `API_PORT` | Compose only | `8080` |
 | `WEB_PORT` | Compose only | `3000` |
+| `KEYCLOAK_PORT` | Compose only | `8081` |
 
 `SIGINT` and `SIGTERM` trigger graceful HTTP shutdown before the database pool is closed.
 
@@ -85,18 +88,19 @@ Run the PostgreSQL persistence and rollback integration tests against a disposab
 TEST_DATABASE_URL='postgres://financial_crime:local_development_only@localhost:5432/financial_crime?sslmode=disable' go test ./internal/infrastructure/postgres
 ```
 
-Protected routes expect an HS256 JWT with these claims:
+Protected routes expect an identity-provider RS256 JWT. Roles are read from standard Keycloak realm access claims:
 
 ```json
 {
   "sub": "analyst@example.test",
-  "role": "analyst",
-  "iss": "financial-crime-compliance-platform",
+  "azp": "fccp-web",
+  "iss": "http://localhost:8081/realms/fccp",
+  "realm_access": {"roles": ["analyst"]},
   "exp": 1784451600
 }
 ```
 
-`JWT_SECRET` must contain at least 32 characters. Tokens with the `analyst` or `admin` role can submit customers. Tokens with the `reviewer` or `admin` role can approve or reject them, but the JWT subject must differ from the original maker. In a deployed environment, tokens should be issued by the configured identity provider. Compose uses an explicitly non-production development secret unless `JWT_SECRET` is supplied.
+The website uses Authorization Code with PKCE and never handles user passwords. The API fetches rotating public keys from JWKS and validates the RS256 signature, issuer, expiry, not-before time and authorized party. Demo-only local users are `analyst / analyst-demo-only`, `reviewer / reviewer-demo-only`, and `administrator / admin-demo-only`; replace the imported realm and credentials outside local development.
 
 Create a high-risk company using a signed token:
 

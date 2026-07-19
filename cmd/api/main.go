@@ -31,7 +31,7 @@ func run(logger *slog.Logger) error {
 	if databaseURL == "" {
 		return fmt.Errorf("DATABASE_URL is required")
 	}
-	authenticator, err := auth.NewAuthenticator(os.Getenv("JWT_SECRET"), envString("JWT_ISSUER", "financial-crime-compliance-platform"))
+	authenticator, err := auth.NewJWKSAuthenticator(os.Getenv("JWT_JWKS_URL"), os.Getenv("JWT_ISSUER"), envString("JWT_AUTHORIZED_PARTY", "fccp-web"))
 	if err != nil {
 		return fmt.Errorf("configure authentication: %w", err)
 	}

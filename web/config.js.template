@@ -1,0 +1,1 @@
+window.__FCCP_CONFIG__={oidcAuthority:"${OIDC_AUTHORITY}",oidcClientId:"${OIDC_CLIENT_ID}"};
