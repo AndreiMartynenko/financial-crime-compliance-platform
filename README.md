@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Operational observability
+## Current milestone: Screening provider resilience and operational notifications
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -70,6 +70,10 @@ Implemented:
 - Prometheus HTTP request, latency and screening-worker metrics;
 - bounded-cardinality route labels and correlation IDs on responses and structured logs;
 - a Docker Compose Prometheus scraper and provisioned Grafana operations dashboard.
+- transactional operational notifications for every new potential screening match;
+- a role-protected compliance inbox with unread count and read attribution;
+- an optional external HTTP screening adapter with timeout, bounded retry and circuit breaker;
+- automatic fallback to the deterministic local provider when no external URL is configured.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -105,6 +109,10 @@ Runtime environment variables:
 | `HTTP_SHUTDOWN_TIMEOUT` | no | `10s` |
 | `SCREENING_WORKER_INTERVAL` | no | `1m` |
 | `SCREENING_JOB_LEASE` | no | `5m` |
+| `SCREENING_PROVIDER_URL` | no | local demo provider |
+| `SCREENING_PROVIDER_API_KEY` | no | none |
+| `SCREENING_PROVIDER_TIMEOUT` | no | `5s` |
+| `SCREENING_PROVIDER_RETRIES` | no | `2` |
 | `JWT_ISSUER` | yes | Keycloak realm URL in Compose |
 | `JWT_JWKS_URL` | yes | internal Keycloak JWKS URL in Compose |
 | `JWT_AUTHORIZED_PARTY` | no | `fccp-web` |
@@ -116,6 +124,8 @@ Runtime environment variables:
 | `GRAFANA_PORT` | Compose only | `3001` |
 
 `SIGINT` and `SIGTERM` trigger graceful HTTP shutdown before the database pool is closed.
+
+When `SCREENING_PROVIDER_URL` is set, the adapter sends `POST {URL}/screen` with `{"name":"..."}` and expects `{"candidates":[{"list_type":"sanctions|pep|adverse_media","name":"...","score":0,"reason":"..."}]}`. Authentication uses `Authorization: Bearer $SCREENING_PROVIDER_API_KEY`. Network and 5xx failures are retried within the configured bound; repeated failures open the circuit temporarily and feed the ongoing-monitoring backoff state.
 
 `GET /healthz` is a process liveness probe. `GET /readyz` verifies that PostgreSQL is reachable and returns `503` when the API should be removed from service. Database migrations are recorded in `schema_migrations` and serialized with a PostgreSQL advisory transaction lock, so concurrent application starts cannot apply the same migration twice.
 
@@ -235,7 +245,7 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Production-grade external screening-provider adapter and notification integrations.
+1. Email/webhook notification delivery with a transactional outbox.
 2. OpenTelemetry distributed tracing and actionable alert rules.
 3. Deployment hardening, secrets management, backups and disaster-recovery procedures.
 

@@ -364,8 +364,17 @@ func TestScreeningPersistsAndDisposesMatchAtomically(t *testing.T) {
 	run := domain.ScreeningRun{ID: "9131e714-5eba-478b-b84e-50fb95f6a572", CustomerID: customer.ID, SubjectType: domain.ScreeningCustomer, SubjectID: customer.ID, QueryName: customer.LegalName, Provider: "integration-provider", CreatedBy: "analyst", CreatedAt: now}
 	match := domain.ScreeningMatch{ID: "384c015e-5855-42d1-a745-f545489d8c6b", RunID: run.ID, CustomerID: customer.ID, SubjectType: domain.ScreeningCustomer, SubjectID: customer.ID, QueryName: customer.LegalName, ListType: domain.ScreeningSanctions, MatchedName: customer.LegalName, Score: 100, Reason: "exact match", Status: domain.MatchPotential, CreatedAt: now}
 	createdEvent := domain.AuditEvent{ID: "d0b199d7-61c9-42a8-b6dc-2b3c9710ae30", AggregateType: "customer", AggregateID: customer.ID, EventType: "screening.completed", Actor: "analyst", OccurredAt: now, Payload: map[string]any{"matches": float64(1)}}
-	if err := repo.SaveScreening(ctx, []domain.ScreeningRun{run}, []domain.ScreeningMatch{match}, []domain.AuditEvent{createdEvent}); err != nil {
+	notification := domain.Notification{ID: "1c4b78b8-5f66-46da-b80c-c5cfbe29f2c1", CustomerID: customer.ID, MatchID: match.ID, Type: "screening_match", Title: "Potential sanctions match", Message: "Review match", CreatedAt: now}
+	if err := repo.SaveScreening(ctx, []domain.ScreeningRun{run}, []domain.ScreeningMatch{match}, []domain.Notification{notification}, []domain.AuditEvent{createdEvent}); err != nil {
 		t.Fatal(err)
+	}
+	notifications, err := repo.ListNotifications(ctx, 10)
+	if err != nil || len(notifications) < 1 {
+		t.Fatalf("notifications=%+v err=%v", notifications, err)
+	}
+	read, err := repo.ReadNotification(ctx, notification.ID, "reviewer", now.Add(time.Second))
+	if err != nil || !read.Read || read.ReadBy != "reviewer" {
+		t.Fatalf("notification=%+v err=%v", read, err)
 	}
 	matches, err := repo.ListScreeningMatches(ctx, customer.ID)
 	if err != nil || len(matches) != 1 || matches[0].Status != domain.MatchPotential {
@@ -436,8 +445,8 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 10 {
-		t.Fatalf("applied migrations=%d, want 10", migrationCount)
+	if migrationCount != 11 {
+		t.Fatalf("applied migrations=%d, want 11", migrationCount)
 	}
 	return pool
 }

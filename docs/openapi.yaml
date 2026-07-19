@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.15.0
+  version: 0.16.0
   description: Portfolio API for authenticated customer-risk assessment, sanctions and PEP screening, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
@@ -275,6 +275,26 @@ paths:
       responses:
         "200": {description: Schedule updated, content: {application/json: {schema: {$ref: "#/components/schemas/ScreeningSchedule"}}}}
         "422": {description: Invalid cadence}
+  /v1/notifications:
+    get:
+      operationId: listNotifications
+      summary: List operational notifications with unread items first
+      security: [{bearerAuth: []}]
+      responses:
+        "200": {description: Notification inbox, content: {application/json: {schema: {$ref: "#/components/schemas/NotificationPage"}}}}
+  /v1/notifications/{notification_id}/read:
+    post:
+      operationId: readNotification
+      summary: Mark a notification as read
+      security: [{bearerAuth: []}]
+      parameters:
+        - in: path
+          name: notification_id
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200": {description: Notification updated, content: {application/json: {schema: {$ref: "#/components/schemas/Notification"}}}}
+        "404": {description: Notification not found}
   /v1/customers/{customer_id}/approve:
     post:
       operationId: approveCustomer
@@ -809,6 +829,25 @@ components:
         lease_until: {type: string, format: date-time}
         updated_by: {type: string}
         updated_at: {type: string, format: date-time}
+    Notification:
+      type: object
+      required: [id, customer_id, match_id, type, title, message, read, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        customer_id: {type: string, format: uuid}
+        match_id: {type: string, format: uuid}
+        type: {type: string, enum: [screening_match]}
+        title: {type: string}
+        message: {type: string}
+        read: {type: boolean}
+        created_at: {type: string, format: date-time}
+        read_by: {type: string}
+        read_at: {type: string, format: date-time}
+    NotificationPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/Notification"}}
     RiskFactors:
       type: object
       required: [country_risk, source_of_funds_verified]

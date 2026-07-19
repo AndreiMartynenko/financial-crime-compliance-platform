@@ -65,7 +65,29 @@ func NewHandler(service *application.OnboardingService, transactionService *appl
 	mux.Handle("POST /v1/screening-matches/{match_id}/disposition", authenticate(authenticator, requireRoles(h.dispositionScreeningMatch, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("GET /v1/customers/{customer_id}/screening-schedule", authenticate(authenticator, requireRoles(h.getScreeningSchedule, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("PUT /v1/customers/{customer_id}/screening-schedule", authenticate(authenticator, requireRoles(h.updateScreeningSchedule, auth.RoleAnalyst, auth.RoleAdmin)))
+	mux.Handle("GET /v1/notifications", authenticate(authenticator, requireRoles(h.listNotifications, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("POST /v1/notifications/{notification_id}/read", authenticate(authenticator, requireRoles(h.readNotification, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	return metrics.Middleware(requestLogging(logger, mux))
+}
+func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
+	items, err := h.screeningService.ListNotifications(r.Context(), 100)
+	if err != nil {
+		h.readError(w, "list notifications", err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
+}
+func (h *Handler) readNotification(w http.ResponseWriter, r *http.Request) {
+	item, err := h.screeningService.ReadNotification(r.Context(), r.PathValue("notification_id"), principalSubject(r))
+	if errors.Is(err, domain.ErrNotificationNotFound) {
+		writeError(w, 404, "notification_not_found", "Notification was not found")
+		return
+	}
+	if err != nil {
+		h.readError(w, "read notification", err)
+		return
+	}
+	writeJSON(w, 200, item)
 }
 
 type screeningScheduleRequest struct {

@@ -869,7 +869,7 @@ func (r *Repository) ReviewKYCDocument(ctx context.Context, id string, status do
 	return stored, nil
 }
 
-func (r *Repository) SaveScreening(ctx context.Context, runs []domain.ScreeningRun, matches []domain.ScreeningMatch, events []domain.AuditEvent) (err error) {
+func (r *Repository) SaveScreening(ctx context.Context, runs []domain.ScreeningRun, matches []domain.ScreeningMatch, notifications []domain.Notification, events []domain.AuditEvent) (err error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -885,12 +885,52 @@ func (r *Repository) SaveScreening(ctx context.Context, runs []domain.ScreeningR
 			return err
 		}
 	}
+	for _, n := range notifications {
+		if _, err = tx.Exec(ctx, `INSERT INTO notifications(id,customer_id,match_id,type,title,message,read,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, n.ID, n.CustomerID, n.MatchID, n.Type, n.Title, n.Message, n.Read, n.CreatedAt); err != nil {
+			return err
+		}
+	}
 	for _, event := range events {
 		if err = insertAuditEvent(ctx, tx, event); err != nil {
 			return err
 		}
 	}
 	return tx.Commit(ctx)
+}
+func scanNotification(row scanner) (domain.Notification, error) {
+	var n domain.Notification
+	var readBy *string
+	err := row.Scan(&n.ID, &n.CustomerID, &n.MatchID, &n.Type, &n.Title, &n.Message, &n.Read, &n.CreatedAt, &readBy, &n.ReadAt)
+	if readBy != nil {
+		n.ReadBy = *readBy
+	}
+	return n, err
+}
+
+const notificationSelect = `id,customer_id,match_id,type,title,message,read,created_at,read_by,read_at`
+
+func (r *Repository) ListNotifications(ctx context.Context, limit int) ([]domain.Notification, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+notificationSelect+` FROM notifications ORDER BY read,created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []domain.Notification{}
+	for rows.Next() {
+		n, err := scanNotification(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, n)
+	}
+	return items, rows.Err()
+}
+func (r *Repository) ReadNotification(ctx context.Context, id, actor string, at time.Time) (domain.Notification, error) {
+	n, err := scanNotification(r.pool.QueryRow(ctx, `UPDATE notifications SET read=true,read_by=$2,read_at=$3 WHERE id=$1 RETURNING `+notificationSelect, id, actor, at))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return n, domain.ErrNotificationNotFound
+	}
+	return n, err
 }
 func scanScreeningMatch(row scanner) (domain.ScreeningMatch, error) {
 	var m domain.ScreeningMatch

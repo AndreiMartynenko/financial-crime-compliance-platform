@@ -402,6 +402,23 @@ func TestScreeningWorkflow(t *testing.T) {
 	if err := json.NewDecoder(screened.Body).Decode(&result); err != nil || screened.Code != http.StatusCreated || len(result.Matches) != 1 {
 		t.Fatalf("result=%+v status=%d err=%v", result, screened.Code, err)
 	}
+	notificationRequest := httptest.NewRequest(http.MethodGet, "/v1/notifications", nil)
+	notificationRequest.Header.Set("Authorization", "Bearer "+signedToken("reviewer", auth.RoleReviewer))
+	notificationResponse := httptest.NewRecorder()
+	h.ServeHTTP(notificationResponse, notificationRequest)
+	var notificationPage struct {
+		Items []domain.Notification `json:"items"`
+	}
+	if err := json.NewDecoder(notificationResponse.Body).Decode(&notificationPage); err != nil || notificationResponse.Code != http.StatusOK || len(notificationPage.Items) != 1 {
+		t.Fatalf("notifications=%+v status=%d err=%v", notificationPage, notificationResponse.Code, err)
+	}
+	readRequest := httptest.NewRequest(http.MethodPost, "/v1/notifications/"+notificationPage.Items[0].ID+"/read", nil)
+	readRequest.Header.Set("Authorization", "Bearer "+signedToken("reviewer", auth.RoleReviewer))
+	readResponse := httptest.NewRecorder()
+	h.ServeHTTP(readResponse, readRequest)
+	if readResponse.Code != http.StatusOK {
+		t.Fatalf("read notification=%d %s", readResponse.Code, readResponse.Body.String())
+	}
 	disposition := httptest.NewRequest(http.MethodPost, "/v1/screening-matches/"+result.Matches[0].ID+"/disposition", bytes.NewReader([]byte(`{"status":"false_positive","reason":"Identity differs by date of birth"}`)))
 	disposition.Header.Set("Authorization", "Bearer "+signedToken("reviewer", auth.RoleReviewer))
 	reviewed := httptest.NewRecorder()

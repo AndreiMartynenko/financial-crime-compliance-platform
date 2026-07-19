@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -53,6 +54,14 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	providerTimeout, err := envDuration("SCREENING_PROVIDER_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return err
+	}
+	providerRetries, err := envInt("SCREENING_PROVIDER_RETRIES", 2)
+	if err != nil {
+		return err
+	}
 	address := envString("HTTP_ADDR", ":8080")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -75,7 +84,11 @@ func run(logger *slog.Logger) error {
 	queryService := application.NewQueryService(repo)
 	caseService := application.NewCaseService(repo)
 	dueDiligenceService := application.NewDueDiligenceService(repo)
-	screeningService := application.NewScreeningService(repo, screening.DemoProvider{})
+	var screeningProvider application.ScreeningProvider = screening.DemoProvider{}
+	if endpoint := os.Getenv("SCREENING_PROVIDER_URL"); endpoint != "" {
+		screeningProvider = screening.NewHTTPProvider(endpoint, os.Getenv("SCREENING_PROVIDER_API_KEY"), providerTimeout, providerRetries, 30*time.Second)
+	}
+	screeningService := application.NewScreeningService(repo, screeningProvider)
 	screeningService.SetLeaseDuration(workerLease)
 	metrics := observability.NewRegistry()
 	workerCtx, stopWorker := context.WithCancel(context.Background())
@@ -149,4 +162,15 @@ func envDuration(name string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s must be a positive duration", name)
 	}
 	return duration, nil
+}
+func envInt(name string, fallback int) (int, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 || parsed > 10 {
+		return 0, fmt.Errorf("%s must be between 0 and 10", name)
+	}
+	return parsed, nil
 }

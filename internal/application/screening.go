@@ -24,13 +24,15 @@ type ScreeningProvider interface {
 type ScreeningRepository interface {
 	GetCustomer(context.Context, string) (domain.Customer, error)
 	GetDueDiligence(context.Context, string) (domain.DueDiligenceDetails, error)
-	SaveScreening(context.Context, []domain.ScreeningRun, []domain.ScreeningMatch, []domain.AuditEvent) error
+	SaveScreening(context.Context, []domain.ScreeningRun, []domain.ScreeningMatch, []domain.Notification, []domain.AuditEvent) error
 	ListScreeningMatches(context.Context, string) ([]domain.ScreeningMatch, error)
 	DispositionScreeningMatch(context.Context, string, domain.ScreeningMatchStatus, string, string, domain.AuditEvent) (domain.ScreeningMatch, error)
 	UpsertScreeningSchedule(context.Context, domain.ScreeningSchedule, domain.AuditEvent) (domain.ScreeningSchedule, error)
 	GetScreeningSchedule(context.Context, string) (domain.ScreeningSchedule, error)
 	ClaimDueScreeningSchedules(context.Context, time.Time, int, string, time.Time) ([]domain.ScreeningSchedule, error)
 	CompleteScreeningSchedule(context.Context, string, string, time.Time, time.Time, string) error
+	ListNotifications(context.Context, int) ([]domain.Notification, error)
+	ReadNotification(context.Context, string, string, time.Time) (domain.Notification, error)
 }
 
 func (s *ScreeningService) ConfigureSchedule(ctx context.Context, customerID string, enabled bool, intervalHours int, actor string) (domain.ScreeningSchedule, error) {
@@ -49,6 +51,19 @@ func (s *ScreeningService) ConfigureSchedule(ctx context.Context, customerID str
 
 func (s *ScreeningService) GetSchedule(ctx context.Context, customerID string) (domain.ScreeningSchedule, error) {
 	return s.repo.GetScreeningSchedule(ctx, strings.TrimSpace(customerID))
+}
+func (s *ScreeningService) ListNotifications(ctx context.Context, limit int) ([]domain.Notification, error) {
+	if limit < 1 || limit > 100 {
+		limit = 100
+	}
+	return s.repo.ListNotifications(ctx, limit)
+}
+func (s *ScreeningService) ReadNotification(ctx context.Context, id, actor string) (domain.Notification, error) {
+	id, actor = strings.TrimSpace(id), strings.TrimSpace(actor)
+	if id == "" || actor == "" {
+		return domain.Notification{}, ErrInvalidScreening
+	}
+	return s.repo.ReadNotification(ctx, id, actor, s.now().UTC())
 }
 
 func (s *ScreeningService) RunDue(ctx context.Context, limit int) (int, error) {
@@ -142,6 +157,7 @@ func (s *ScreeningService) ScreenCustomer(ctx context.Context, customerID, actor
 	now := s.now().UTC()
 	result := domain.ScreeningResult{Runs: []domain.ScreeningRun{}, Matches: []domain.ScreeningMatch{}}
 	events := []domain.AuditEvent{}
+	notifications := []domain.Notification{}
 	for _, subject := range subjects {
 		candidates, err := s.provider.Screen(ctx, subject.name)
 		if err != nil {
@@ -152,10 +168,11 @@ func (s *ScreeningService) ScreenCustomer(ctx context.Context, customerID, actor
 		for _, candidate := range candidates {
 			match := domain.ScreeningMatch{ID: newID(), RunID: run.ID, CustomerID: customerID, SubjectType: subject.kind, SubjectID: subject.id, QueryName: subject.name, ListType: candidate.ListType, MatchedName: candidate.Name, Score: candidate.Score, Reason: candidate.Reason, Status: domain.MatchPotential, CreatedAt: now}
 			result.Matches = append(result.Matches, match)
+			notifications = append(notifications, domain.Notification{ID: newID(), CustomerID: customerID, MatchID: match.ID, Type: "screening_match", Title: "Potential " + string(candidate.ListType) + " match", Message: subject.name + " matched " + candidate.Name, CreatedAt: now})
 		}
 		events = append(events, domain.AuditEvent{ID: newID(), AggregateType: "customer", AggregateID: customerID, EventType: "screening.completed", Actor: actor, OccurredAt: now, Payload: map[string]any{"run_id": run.ID, "subject_type": subject.kind, "subject_id": subject.id, "match_count": len(candidates), "provider": s.provider.Name()}})
 	}
-	if err := s.repo.SaveScreening(ctx, result.Runs, result.Matches, events); err != nil {
+	if err := s.repo.SaveScreening(ctx, result.Runs, result.Matches, notifications, events); err != nil {
 		return domain.ScreeningResult{}, err
 	}
 	return result, nil
