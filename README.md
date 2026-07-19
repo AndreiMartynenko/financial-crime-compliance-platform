@@ -39,7 +39,8 @@ Implemented:
 - separate liveness and database-backed readiness probes;
 - GitHub Actions verification with PostgreSQL integration tests, race detection, vet and container build;
 - concurrency-safe idempotent transaction ingestion with replay and payload-conflict detection;
-- cursor-paginated read APIs for customers, transactions, alerts and audit trails.
+- cursor-paginated read APIs for customers, transactions, alerts and audit trails;
+- responsive React operations portal delivered through a same-origin Nginx reverse proxy.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -49,6 +50,8 @@ The in-memory repository remains available for fast API tests. The running API r
 go test ./...
 docker compose up --build
 ```
+
+Open the analyst website at [http://localhost:3000](http://localhost:3000). The API remains available at `http://localhost:8080`; browser requests use `/api` through the website reverse proxy.
 
 The API applies the embedded SQL migration when it starts. For running the API outside Compose:
 
@@ -70,6 +73,7 @@ Runtime environment variables:
 | `JWT_ISSUER` | no | `financial-crime-compliance-platform` |
 | `POSTGRES_PORT` | Compose only | `5432` |
 | `API_PORT` | Compose only | `8080` |
+| `WEB_PORT` | Compose only | `3000` |
 
 `SIGINT` and `SIGTERM` trigger graceful HTTP shutdown before the database pool is closed.
 

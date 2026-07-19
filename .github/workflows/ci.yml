@@ -37,7 +37,15 @@ jobs:
         run: go test -race -count=1 ./...
       - name: Vet
         run: go vet ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build website
+        working-directory: web
+        run: npm ci && npm run build
       - name: Validate Compose
         run: docker compose config --quiet
       - name: Build container
-        run: docker compose build api
+        run: docker compose build api web

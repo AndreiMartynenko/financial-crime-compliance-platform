@@ -1,4 +1,11 @@
 services:
+  web:
+    build: ./web
+    ports:
+      - "${WEB_PORT:-3000}:80"
+    depends_on:
+      - api
+
   api:
     build: .
     ports:
