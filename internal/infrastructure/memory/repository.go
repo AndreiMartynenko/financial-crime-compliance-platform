@@ -3,8 +3,11 @@ package memory
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
+	"time"
 
+	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/application"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
 )
 
@@ -15,6 +18,81 @@ type Repository struct {
 	alerts       map[string]domain.Alert
 	idempotency  map[string]string
 	events       map[string][]domain.AuditEvent
+}
+
+func (r *Repository) GetCustomer(_ context.Context, id string) (domain.Customer, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	customer, ok := r.customers[id]
+	if !ok {
+		return domain.Customer{}, domain.ErrCustomerNotFound
+	}
+	return customer, nil
+}
+
+func (r *Repository) ListCustomers(_ context.Context, status domain.CustomerStatus, page application.PageRequest) ([]domain.Customer, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	items := make([]domain.Customer, 0)
+	for _, v := range r.customers {
+		if (status == "" || v.Status == status) && before(v.CreatedAt, v.ID, page) {
+			items = append(items, v)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return newer(items[i].CreatedAt, items[i].ID, items[j].CreatedAt, items[j].ID) })
+	return limit(items, page.Limit), nil
+}
+
+func (r *Repository) ListCustomerTransactions(_ context.Context, customerID string, page application.PageRequest) ([]domain.Transaction, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	items := make([]domain.Transaction, 0)
+	for _, v := range r.transactions {
+		if v.CustomerID == customerID && before(v.OccurredAt, v.ID, page) {
+			items = append(items, v)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return newer(items[i].OccurredAt, items[i].ID, items[j].OccurredAt, items[j].ID) })
+	return limit(items, page.Limit), nil
+}
+
+func (r *Repository) ListAuditEventsPage(_ context.Context, aggregateID string, page application.PageRequest) ([]domain.AuditEvent, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	items := make([]domain.AuditEvent, 0)
+	for _, v := range r.events[aggregateID] {
+		if before(v.OccurredAt, v.ID, page) {
+			items = append(items, v)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return newer(items[i].OccurredAt, items[i].ID, items[j].OccurredAt, items[j].ID) })
+	return limit(items, page.Limit), nil
+}
+
+func (r *Repository) ListAlertsPage(_ context.Context, status domain.AlertStatus, page application.PageRequest) ([]domain.Alert, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	items := make([]domain.Alert, 0)
+	for _, v := range r.alerts {
+		if (status == "" || v.Status == status) && before(v.CreatedAt, v.ID, page) {
+			items = append(items, v)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return newer(items[i].CreatedAt, items[i].ID, items[j].CreatedAt, items[j].ID) })
+	return limit(items, page.Limit), nil
+}
+
+func before(timestamp time.Time, id string, page application.PageRequest) bool {
+	return page.CursorTime.IsZero() || timestamp.Before(page.CursorTime) || (timestamp.Equal(page.CursorTime) && id < page.CursorID)
+}
+func newer(a time.Time, aID string, b time.Time, bID string) bool {
+	return a.After(b) || (a.Equal(b) && aID > bID)
+}
+func limit[T any](items []T, size int) []T {
+	if len(items) > size {
+		return items[:size]
+	}
+	return items
 }
 
 func NewRepository() *Repository {

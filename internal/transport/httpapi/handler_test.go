@@ -163,7 +163,7 @@ func TestIngestTransactionForActiveCustomer(t *testing.T) {
 		t.Fatalf("list status=%d body=%s", listResponse.Code, listResponse.Body.String())
 	}
 	var listed struct {
-		Alerts []domain.Alert `json:"alerts"`
+		Alerts []domain.Alert `json:"items"`
 	}
 	if err := json.NewDecoder(listResponse.Body).Decode(&listed); err != nil || len(listed.Alerts) != 2 {
 		t.Fatalf("listed alerts=%+v err=%v", listed.Alerts, err)
@@ -234,6 +234,38 @@ func TestCannotIngestTransactionForPendingCustomer(t *testing.T) {
 	}
 }
 
+func TestListCustomersUsesCursorPagination(t *testing.T) {
+	t.Parallel()
+	repo := memory.NewRepository()
+	h := testHandler(t, repo)
+	for _, name := range []string{"First Customer Ltd", "Second Customer Ltd"} {
+		body := []byte(fmt.Sprintf(`{"type":"company","legal_name":%q,"country_code":"GB","risk_factors":{"country_risk":"low","source_of_funds_verified":true}}`, name))
+		req := httptest.NewRequest(http.MethodPost, "/v1/customers", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+signedToken("maker@example.test", auth.RoleAnalyst))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	firstRequest := httptest.NewRequest(http.MethodGet, "/v1/customers?status=pending_approval&page_size=1", nil)
+	firstRequest.Header.Set("Authorization", "Bearer "+signedToken("reviewer@example.test", auth.RoleReviewer))
+	firstResponse := httptest.NewRecorder()
+	h.ServeHTTP(firstResponse, firstRequest)
+	var first application.Page[domain.Customer]
+	if err := json.NewDecoder(firstResponse.Body).Decode(&first); err != nil || len(first.Items) != 1 || first.NextPageToken == "" {
+		t.Fatalf("first page=%+v err=%v", first, err)
+	}
+	secondRequest := httptest.NewRequest(http.MethodGet, "/v1/customers?page_size=1&page_token="+first.NextPageToken, nil)
+	secondRequest.Header.Set("Authorization", "Bearer "+signedToken("reviewer@example.test", auth.RoleReviewer))
+	secondResponse := httptest.NewRecorder()
+	h.ServeHTTP(secondResponse, secondRequest)
+	var second application.Page[domain.Customer]
+	if err := json.NewDecoder(secondResponse.Body).Decode(&second); err != nil || len(second.Items) != 1 || second.Items[0].ID == first.Items[0].ID {
+		t.Fatalf("second page=%+v err=%v", second, err)
+	}
+}
+
 func TestOnboardCustomerRequiresAuthentication(t *testing.T) {
 	t.Parallel()
 	h := testHandler(t, memory.NewRepository())
@@ -253,7 +285,7 @@ func TestReadinessFailsWhenDatabaseIsUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewHandler(
-		application.NewOnboardingService(repo), application.NewTransactionService(repo),
+		application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator,
 		healthCheckerFunc(func(context.Context) error { return errors.New("database unavailable") }),
 	)
@@ -285,7 +317,7 @@ func testHandler(t *testing.T, repo *memory.Repository) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator, healthCheckerFunc(func(context.Context) error { return nil }))
+	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator, healthCheckerFunc(func(context.Context) error { return nil }))
 }
 
 type healthCheckerFunc func(context.Context) error

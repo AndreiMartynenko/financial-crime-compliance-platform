@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.6.0
+  version: 0.7.0
   description: Portfolio API for authenticated customer-risk assessment, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
@@ -21,6 +21,25 @@ paths:
         "503":
           description: PostgreSQL is unavailable
   /v1/customers:
+    get:
+      operationId: listCustomers
+      summary: List customers using stable cursor pagination
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/PageSize"}
+        - {$ref: "#/components/parameters/PageToken"}
+        - in: query
+          name: status
+          schema: {type: string, enum: [pending_approval, active, rejected]}
+      responses:
+        "200":
+          description: Customer page
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CustomerPage"}
+        "401": {description: Authentication required}
+        "403": {description: Role is not authorized}
+        "422": {description: Invalid filter or page cursor}
     post:
       operationId: onboardCustomer
       summary: Onboard and risk-assess a customer
@@ -58,6 +77,49 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/customers/{customer_id}:
+    get:
+      operationId: getCustomer
+      summary: Get a customer
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      responses:
+        "200":
+          description: Customer details
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Customer"}
+        "404": {description: Customer not found}
+  /v1/customers/{customer_id}/transactions:
+    get:
+      operationId: listCustomerTransactions
+      summary: List customer transactions
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/CustomerID"}
+        - {$ref: "#/components/parameters/PageSize"}
+        - {$ref: "#/components/parameters/PageToken"}
+      responses:
+        "200":
+          description: Transaction page
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TransactionPage"}
+  /v1/customers/{customer_id}/audit-events:
+    get:
+      operationId: listCustomerAuditEvents
+      summary: List customer audit trail
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/CustomerID"}
+        - {$ref: "#/components/parameters/PageSize"}
+        - {$ref: "#/components/parameters/PageToken"}
+      responses:
+        "200":
+          description: Audit-event page
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuditEventPage"}
   /v1/customers/{customer_id}/approve:
     post:
       operationId: approveCustomer
@@ -157,18 +219,15 @@ paths:
         - in: query
           name: status
           schema: {type: string, enum: [open, closed]}
+        - {$ref: "#/components/parameters/PageSize"}
+        - {$ref: "#/components/parameters/PageToken"}
       responses:
         "200":
           description: Monitoring alerts ordered newest first
           content:
             application/json:
               schema:
-                type: object
-                required: [alerts]
-                properties:
-                  alerts:
-                    type: array
-                    items: {$ref: "#/components/schemas/Alert"}
+                $ref: "#/components/schemas/AlertPage"
         "401": {description: Missing, invalid, or expired bearer token}
         "403": {description: Authenticated role cannot view alerts}
         "422": {description: Invalid status filter}
@@ -205,6 +264,15 @@ paths:
         "500": {description: Alert closure could not be persisted; the transaction is rolled back}
 components:
   parameters:
+    PageSize:
+      in: query
+      name: page_size
+      schema: {type: integer, minimum: 1, maximum: 100, default: 25}
+    PageToken:
+      in: query
+      name: page_token
+      schema: {type: string}
+      description: Opaque cursor returned as `next_page_token` by the previous page.
     CustomerID:
       in: path
       name: customer_id
@@ -291,6 +359,41 @@ components:
       required: [reason]
       properties:
         reason: {type: string, minLength: 1}
+    CustomerPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/Customer"}}
+        next_page_token: {type: string}
+    TransactionPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/Transaction"}}
+        next_page_token: {type: string}
+    AlertPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/Alert"}}
+        next_page_token: {type: string}
+    AuditEvent:
+      type: object
+      required: [id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload]
+      properties:
+        id: {type: string, format: uuid}
+        aggregate_type: {type: string, enum: [customer, transaction, alert]}
+        aggregate_id: {type: string, format: uuid}
+        event_type: {type: string}
+        actor: {type: string}
+        occurred_at: {type: string, format: date-time}
+        payload: {type: object, additionalProperties: true}
+    AuditEventPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/AuditEvent"}}
+        next_page_token: {type: string}
     RiskFactors:
       type: object
       required: [country_risk, source_of_funds_verified]

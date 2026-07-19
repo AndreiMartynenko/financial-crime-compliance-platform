@@ -38,7 +38,8 @@ Implemented:
 - migration ledger protected by a PostgreSQL advisory lock;
 - separate liveness and database-backed readiness probes;
 - GitHub Actions verification with PostgreSQL integration tests, race detection, vet and container build;
-- concurrency-safe idempotent transaction ingestion with replay and payload-conflict detection.
+- concurrency-safe idempotent transaction ingestion with replay and payload-conflict detection;
+- cursor-paginated read APIs for customers, transactions, alerts and audit trails.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 

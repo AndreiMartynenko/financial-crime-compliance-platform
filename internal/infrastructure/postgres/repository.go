@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/application"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -368,12 +369,13 @@ type scanner interface {
 func scanCustomer(row scanner) (domain.Customer, error) {
 	var customer domain.Customer
 	var riskFactors, riskReasons []byte
+	var reviewedBy *string
 	err := row.Scan(
 		&customer.ID, &customer.ExternalRef, &customer.Type, &customer.LegalName, &customer.CountryCode,
 		&riskFactors, &customer.RiskAssessment.Score, &customer.RiskAssessment.Rating,
 		&customer.RiskAssessment.DueDiligence, &riskReasons, &customer.RiskAssessment.RuleVersion,
 		&customer.RiskAssessment.AssessedAt, &customer.Status, &customer.CreatedBy,
-		&customer.ReviewedBy, &customer.ReviewedAt, &customer.CreatedAt,
+		&reviewedBy, &customer.ReviewedAt, &customer.CreatedAt,
 	)
 	if err != nil {
 		return domain.Customer{}, err
@@ -384,7 +386,114 @@ func scanCustomer(row scanner) (domain.Customer, error) {
 	if err := json.Unmarshal(riskReasons, &customer.RiskAssessment.Reasons); err != nil {
 		return domain.Customer{}, fmt.Errorf("decode customer risk reasons: %w", err)
 	}
+	if reviewedBy != nil {
+		customer.ReviewedBy = *reviewedBy
+	}
 	return customer, nil
+}
+
+const customerSelect = `id, external_ref, customer_type, legal_name, country_code,
+	risk_factors, risk_score, risk_rating, due_diligence, risk_reasons,
+	risk_rule_version, risk_assessed_at, status, created_by, reviewed_by, reviewed_at, created_at`
+
+func (r *Repository) GetCustomer(ctx context.Context, id string) (domain.Customer, error) {
+	customer, err := scanCustomer(r.pool.QueryRow(ctx, "SELECT "+customerSelect+" FROM customers WHERE id = $1", id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Customer{}, domain.ErrCustomerNotFound
+	}
+	if err != nil {
+		return domain.Customer{}, fmt.Errorf("get customer: %w", err)
+	}
+	return customer, nil
+}
+
+func (r *Repository) ListCustomers(ctx context.Context, status domain.CustomerStatus, page application.PageRequest) ([]domain.Customer, error) {
+	rows, err := r.pool.Query(ctx, "SELECT "+customerSelect+` FROM customers
+		WHERE ($1 = '' OR status = $1) AND (NOT $2 OR (created_at, id) < ($3, $4::uuid))
+		ORDER BY created_at DESC, id DESC LIMIT $5`, status, !page.CursorTime.IsZero(), page.CursorTime, nullableCursorID(page.CursorID), page.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list customers: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.Customer, 0)
+	for rows.Next() {
+		item, err := scanCustomer(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan customer: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) ListCustomerTransactions(ctx context.Context, customerID string, page application.PageRequest) ([]domain.Transaction, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id, idempotency_key, external_ref, customer_id, direction, amount_minor,
+		currency, counterparty_country, occurred_at, ingested_at, ingested_by FROM transactions
+		WHERE customer_id = $1 AND (NOT $2 OR (occurred_at, id) < ($3, $4::uuid))
+		ORDER BY occurred_at DESC, id DESC LIMIT $5`, customerID, !page.CursorTime.IsZero(), page.CursorTime, nullableCursorID(page.CursorID), page.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list customer transactions: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.Transaction, 0)
+	for rows.Next() {
+		item, err := scanTransaction(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan transaction: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) ListAuditEventsPage(ctx context.Context, aggregateID string, page application.PageRequest) ([]domain.AuditEvent, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload FROM audit_events
+		WHERE aggregate_id = $1 AND (NOT $2 OR (occurred_at, id) < ($3, $4::uuid))
+		ORDER BY occurred_at DESC, id DESC LIMIT $5`, aggregateID, !page.CursorTime.IsZero(), page.CursorTime, nullableCursorID(page.CursorID), page.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list audit events page: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.AuditEvent, 0)
+	for rows.Next() {
+		var item domain.AuditEvent
+		var payload []byte
+		if err := rows.Scan(&item.ID, &item.AggregateType, &item.AggregateID, &item.EventType, &item.Actor, &item.OccurredAt, &payload); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(payload, &item.Payload); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) ListAlertsPage(ctx context.Context, status domain.AlertStatus, page application.PageRequest) ([]domain.Alert, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id, transaction_id, customer_id, rule_code, rule_version, severity,
+		status, reason_code, description, created_at, closed_at, closed_by, closure_reason FROM alerts
+		WHERE ($1 = '' OR status = $1) AND (NOT $2 OR (created_at, id) < ($3, $4::uuid))
+		ORDER BY created_at DESC, id DESC LIMIT $5`, status, !page.CursorTime.IsZero(), page.CursorTime, nullableCursorID(page.CursorID), page.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list alerts page: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.Alert, 0)
+	for rows.Next() {
+		item, err := scanAlert(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func nullableCursorID(id string) any {
+	if id == "" {
+		return nil
+	}
+	return id
 }
 
 func (r *Repository) ListAuditEvents(ctx context.Context, customerID string) ([]domain.AuditEvent, error) {

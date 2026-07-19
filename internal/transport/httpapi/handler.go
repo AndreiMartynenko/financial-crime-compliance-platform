@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/application"
@@ -17,6 +18,7 @@ import (
 type Handler struct {
 	service            *application.OnboardingService
 	transactionService *application.TransactionService
+	queryService       *application.QueryService
 	logger             *slog.Logger
 	readiness          HealthChecker
 }
@@ -25,18 +27,94 @@ type HealthChecker interface {
 	Ping(context.Context) error
 }
 
-func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, logger *slog.Logger, authenticator *auth.Authenticator, health HealthChecker) http.Handler {
-	h := &Handler{service: service, transactionService: transactionService, logger: logger, readiness: health}
+func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, queryService *application.QueryService, logger *slog.Logger, authenticator *auth.Authenticator, health HealthChecker) http.Handler {
+	h := &Handler{service: service, transactionService: transactionService, queryService: queryService, logger: logger, readiness: health}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.health)
 	mux.HandleFunc("GET /readyz", h.ready)
 	mux.Handle("POST /v1/customers", authenticate(authenticator, requireRoles(h.onboardCustomer, auth.RoleAnalyst, auth.RoleAdmin)))
+	mux.Handle("GET /v1/customers", authenticate(authenticator, requireRoles(h.listCustomers, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("GET /v1/customers/{customer_id}", authenticate(authenticator, requireRoles(h.getCustomer, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("GET /v1/customers/{customer_id}/transactions", authenticate(authenticator, requireRoles(h.listCustomerTransactions, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("GET /v1/customers/{customer_id}/audit-events", authenticate(authenticator, requireRoles(h.listAuditEvents, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/customers/{customer_id}/approve", authenticate(authenticator, requireRoles(h.reviewCustomer(domain.ReviewApprove), auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/customers/{customer_id}/reject", authenticate(authenticator, requireRoles(h.reviewCustomer(domain.ReviewReject), auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/transactions", authenticate(authenticator, requireRoles(h.ingestTransaction, auth.RoleAnalyst, auth.RoleAdmin)))
 	mux.Handle("GET /v1/alerts", authenticate(authenticator, requireRoles(h.listAlerts, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/alerts/{alert_id}/close", authenticate(authenticator, requireRoles(h.closeAlert, auth.RoleReviewer, auth.RoleAdmin)))
 	return requestLogging(logger, mux)
+}
+
+func pageRequest(r *http.Request) (application.PageRequest, error) {
+	size := 0
+	if value := r.URL.Query().Get("page_size"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return application.PageRequest{}, application.ErrInvalidPage
+		}
+		size = parsed
+	}
+	return application.NewPageRequest(size, r.URL.Query().Get("page_token"))
+}
+
+func (h *Handler) listCustomers(w http.ResponseWriter, r *http.Request) {
+	page, err := pageRequest(r)
+	if err != nil {
+		writeError(w, 422, "invalid_page", "Pagination parameters are invalid")
+		return
+	}
+	result, err := h.queryService.ListCustomers(r.Context(), domain.CustomerStatus(r.URL.Query().Get("status")), page)
+	if err != nil {
+		if errors.Is(err, application.ErrInvalidPage) {
+			writeError(w, 422, "invalid_filter", "Customer status is invalid")
+			return
+		}
+		h.readError(w, "list customers", err)
+		return
+	}
+	writeJSON(w, 200, result)
+}
+func (h *Handler) getCustomer(w http.ResponseWriter, r *http.Request) {
+	customer, err := h.queryService.GetCustomer(r.Context(), r.PathValue("customer_id"))
+	if errors.Is(err, domain.ErrCustomerNotFound) {
+		writeError(w, 404, "customer_not_found", "Customer was not found")
+		return
+	}
+	if err != nil {
+		h.readError(w, "get customer", err)
+		return
+	}
+	writeJSON(w, 200, customer)
+}
+func (h *Handler) listCustomerTransactions(w http.ResponseWriter, r *http.Request) {
+	page, err := pageRequest(r)
+	if err != nil {
+		writeError(w, 422, "invalid_page", "Pagination parameters are invalid")
+		return
+	}
+	result, err := h.queryService.ListTransactions(r.Context(), r.PathValue("customer_id"), page)
+	if err != nil {
+		h.readError(w, "list transactions", err)
+		return
+	}
+	writeJSON(w, 200, result)
+}
+func (h *Handler) listAuditEvents(w http.ResponseWriter, r *http.Request) {
+	page, err := pageRequest(r)
+	if err != nil {
+		writeError(w, 422, "invalid_page", "Pagination parameters are invalid")
+		return
+	}
+	result, err := h.queryService.ListAuditEvents(r.Context(), r.PathValue("customer_id"), page)
+	if err != nil {
+		h.readError(w, "list audit events", err)
+		return
+	}
+	writeJSON(w, 200, result)
+}
+func (h *Handler) readError(w http.ResponseWriter, operation string, err error) {
+	h.logger.Error(operation, "error", err)
+	writeError(w, 500, "internal_error", "Data could not be loaded")
 }
 
 func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
@@ -51,8 +129,13 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listAlerts(w http.ResponseWriter, r *http.Request) {
-	alerts, err := h.transactionService.ListAlerts(r.Context(), domain.AlertStatus(r.URL.Query().Get("status")))
-	if errors.Is(err, application.ErrInvalidAlertReview) {
+	page, err := pageRequest(r)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_page", "Pagination parameters are invalid")
+		return
+	}
+	alerts, err := h.queryService.ListAlerts(r.Context(), domain.AlertStatus(r.URL.Query().Get("status")), page)
+	if errors.Is(err, application.ErrInvalidPage) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_alert_filter", "Alert status filter is not valid")
 		return
 	}
@@ -61,7 +144,7 @@ func (h *Handler) listAlerts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Alerts could not be listed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"alerts": alerts})
+	writeJSON(w, http.StatusOK, alerts)
 }
 
 func (h *Handler) closeAlert(w http.ResponseWriter, r *http.Request) {

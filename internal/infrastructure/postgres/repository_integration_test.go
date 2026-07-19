@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/application"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -53,6 +54,27 @@ func TestCreateCustomerPersistsCustomerAndAuditEvent(t *testing.T) {
 	}
 	if reviewed.Status != domain.CustomerActive || reviewed.ReviewedBy != reviewEvent.Actor {
 		t.Fatalf("unexpected review state: %+v", reviewed)
+	}
+	loaded, err := repo.GetCustomer(ctx, customer.ID)
+	if err != nil || loaded.Status != domain.CustomerActive {
+		t.Fatalf("loaded customer=%+v err=%v", loaded, err)
+	}
+	customers, err := repo.ListCustomers(ctx, domain.CustomerActive, application.PageRequest{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundCustomer := false
+	for _, listed := range customers {
+		if listed.ID == customer.ID {
+			foundCustomer = true
+		}
+	}
+	if !foundCustomer {
+		t.Fatalf("customer %s not found in page", customer.ID)
+	}
+	auditPage, err := repo.ListAuditEventsPage(ctx, customer.ID, application.PageRequest{Limit: 3})
+	if err != nil || len(auditPage) != 2 {
+		t.Fatalf("audit page=%+v err=%v", auditPage, err)
 	}
 	events, err = repo.ListAuditEvents(ctx, customer.ID)
 	if err != nil || len(events) != 2 || events[1].EventType != "customer.approved" {
@@ -157,6 +179,10 @@ func TestCreateTransactionPersistsTransactionAndAuditEvent(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("transaction count=%d, want 1", count)
 	}
+	transactions, err := repo.ListCustomerTransactions(ctx, customer.ID, application.PageRequest{Limit: 2})
+	if err != nil || len(transactions) != 1 || transactions[0].ID != transaction.ID {
+		t.Fatalf("transactions=%+v err=%v", transactions, err)
+	}
 	replayedTransaction, replayedAlerts, replayed, err := repo.CreateTransaction(ctx, transaction, event, []domain.Alert{alert}, []domain.AuditEvent{alertEvent})
 	if err != nil || !replayed || replayedTransaction.ID != transaction.ID || len(replayedAlerts) != 1 {
 		t.Fatalf("replayed transaction=%+v alerts=%+v replayed=%v err=%v", replayedTransaction, replayedAlerts, replayed, err)
@@ -173,6 +199,10 @@ func TestCreateTransactionPersistsTransactionAndAuditEvent(t *testing.T) {
 	alerts, err := repo.ListAlerts(ctx, domain.AlertOpen)
 	if err != nil || len(alerts) != 1 || alerts[0].RuleVersion != domain.TransactionMonitoringRuleVersion {
 		t.Fatalf("unexpected alerts: %+v err=%v", alerts, err)
+	}
+	alertPage, err := repo.ListAlertsPage(ctx, domain.AlertOpen, application.PageRequest{Limit: 2})
+	if err != nil || len(alertPage) != 1 {
+		t.Fatalf("alert page=%+v err=%v", alertPage, err)
 	}
 	invalidCloseEvent := domain.AuditEvent{
 		ID: "d5748da6-1c0e-443e-80f9-f67cd7e8c862", AggregateType: "invalid", AggregateID: alert.ID,
