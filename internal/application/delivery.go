@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"time"
 )
 
@@ -20,7 +22,7 @@ func (s *DeliveryService) Pending(ctx context.Context) (int, error) {
 }
 
 type DeliverySender interface {
-	Send(context.Context, string, map[string]any) error
+	Send(context.Context, domain.OutboxMessage) error
 }
 type DeliveryService struct {
 	repo     DeliveryRepository
@@ -40,8 +42,8 @@ func (s *DeliveryService) RunDue(ctx context.Context, limit int) (int, error) {
 	}
 	delivered, failed := 0, 0
 	for _, item := range items {
-		sendCtx, sendSpan := otel.Tracer("fccp/notifications").Start(ctx, "notification.webhook")
-		sendErr := s.sender.Send(sendCtx, item.Destination, item.Payload)
+		sendCtx, sendSpan := otel.Tracer("fccp/notifications").Start(ctx, "notification.delivery", trace.WithAttributes(attribute.String("notification.channel", item.Channel)))
+		sendErr := s.sender.Send(sendCtx, item)
 		if sendErr != nil {
 			sendSpan.RecordError(sendErr)
 			sendSpan.SetStatus(codes.Error, sendErr.Error())

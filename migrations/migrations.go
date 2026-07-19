@@ -44,6 +44,9 @@ var notificationsSchema string
 //go:embed 000012_notification_outbox.up.sql
 var notificationOutboxSchema string
 
+//go:embed 000013_notification_channels.up.sql
+var notificationChannelsSchema string
+
 func Up(ctx context.Context, pool *pgxpool.Pool) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -78,6 +81,7 @@ func Up(ctx context.Context, pool *pgxpool.Pool) error {
 		{10, "screening_job_leases", screeningJobLeasesSchema},
 		{11, "notifications", notificationsSchema},
 		{12, "notification_outbox", notificationOutboxSchema},
+		{13, "notification_channels", notificationChannelsSchema},
 	}
 	for _, migration := range migrationList {
 		var applied bool

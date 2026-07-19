@@ -9,11 +9,13 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"net/mail"
 	"strings"
 	"time"
 )
 
 var ErrInvalidScreening = errors.New("invalid screening request")
+var ErrInvalidNotificationPreference = errors.New("invalid notification preference")
 
 type ScreeningCandidate struct {
 	ListType domain.ScreeningListType
@@ -37,6 +39,9 @@ type ScreeningRepository interface {
 	CompleteScreeningSchedule(context.Context, string, string, time.Time, time.Time, string) error
 	ListNotifications(context.Context, int) ([]domain.Notification, error)
 	ReadNotification(context.Context, string, string, time.Time) (domain.Notification, error)
+	GetNotificationPreference(context.Context, string) (domain.NotificationPreference, error)
+	UpsertNotificationPreference(context.Context, domain.NotificationPreference) (domain.NotificationPreference, error)
+	ListEmailNotificationRecipients(context.Context) ([]string, error)
 }
 
 func (s *ScreeningService) ConfigureSchedule(ctx context.Context, customerID string, enabled bool, intervalHours int, actor string) (domain.ScreeningSchedule, error) {
@@ -68,6 +73,34 @@ func (s *ScreeningService) ReadNotification(ctx context.Context, id, actor strin
 		return domain.Notification{}, ErrInvalidScreening
 	}
 	return s.repo.ReadNotification(ctx, id, actor, s.now().UTC())
+}
+
+func (s *ScreeningService) GetNotificationPreference(ctx context.Context, actor string) (domain.NotificationPreference, error) {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return domain.NotificationPreference{}, ErrInvalidNotificationPreference
+	}
+	preference, err := s.repo.GetNotificationPreference(ctx, actor)
+	if errors.Is(err, domain.ErrNotificationNotFound) {
+		return domain.NotificationPreference{ActorSubject: actor}, nil
+	}
+	return preference, err
+}
+
+func (s *ScreeningService) ConfigureNotificationPreference(ctx context.Context, actor, email string, enabled bool) (domain.NotificationPreference, error) {
+	actor, email = strings.TrimSpace(actor), strings.TrimSpace(email)
+	if actor == "" || (enabled && !validEmail(email)) {
+		return domain.NotificationPreference{}, ErrInvalidNotificationPreference
+	}
+	if email != "" && !validEmail(email) {
+		return domain.NotificationPreference{}, ErrInvalidNotificationPreference
+	}
+	return s.repo.UpsertNotificationPreference(ctx, domain.NotificationPreference{ActorSubject: actor, EmailAddress: email, EmailEnabled: enabled, UpdatedAt: s.now().UTC()})
+}
+
+func validEmail(value string) bool {
+	address, err := mail.ParseAddress(value)
+	return err == nil && address.Address == value
 }
 
 func (s *ScreeningService) RunDue(ctx context.Context, limit int) (int, error) {
@@ -165,6 +198,10 @@ func (s *ScreeningService) ScreenCustomer(ctx context.Context, customerID, actor
 	events := []domain.AuditEvent{}
 	notifications := []domain.Notification{}
 	outbox := []domain.OutboxMessage{}
+	emailRecipients, err := s.repo.ListEmailNotificationRecipients(ctx)
+	if err != nil {
+		return result, err
+	}
 	for _, subject := range subjects {
 		providerCtx, providerSpan := otel.Tracer("fccp/screening").Start(ctx, "screening.provider", trace.WithAttributes(attribute.String("screening.provider", s.provider.Name()), attribute.String("screening.subject_type", string(subject.kind))))
 		candidates, err := s.provider.Screen(providerCtx, subject.name)
@@ -184,7 +221,10 @@ func (s *ScreeningService) ScreenCustomer(ctx context.Context, customerID, actor
 			notification := domain.Notification{ID: newID(), CustomerID: customerID, MatchID: match.ID, Type: "screening_match", Title: "Potential " + string(candidate.ListType) + " match", Message: subject.name + " matched " + candidate.Name, CreatedAt: now}
 			notifications = append(notifications, notification)
 			if s.webhookURL != "" {
-				outbox = append(outbox, domain.OutboxMessage{ID: newID(), NotificationID: notification.ID, Destination: s.webhookURL, Payload: map[string]any{"id": notification.ID, "customer_id": customerID, "match_id": match.ID, "title": notification.Title, "message": notification.Message, "created_at": now}, Status: "pending", NextAttemptAt: now, CreatedAt: now})
+				outbox = append(outbox, domain.OutboxMessage{ID: newID(), NotificationID: notification.ID, Channel: "webhook", Destination: s.webhookURL, Payload: map[string]any{"id": notification.ID, "customer_id": customerID, "match_id": match.ID, "title": notification.Title, "message": notification.Message, "created_at": now}, Status: "pending", NextAttemptAt: now, CreatedAt: now})
+			}
+			for _, recipient := range emailRecipients {
+				outbox = append(outbox, domain.OutboxMessage{ID: newID(), NotificationID: notification.ID, Channel: "email", Destination: recipient, Payload: map[string]any{"id": notification.ID, "customer_id": customerID, "match_id": match.ID, "title": notification.Title, "message": notification.Message, "created_at": now}, Status: "pending", NextAttemptAt: now, CreatedAt: now})
 			}
 		}
 		events = append(events, domain.AuditEvent{ID: newID(), AggregateType: "customer", AggregateID: customerID, EventType: "screening.completed", Actor: actor, OccurredAt: now, Payload: map[string]any{"run_id": run.ID, "subject_type": subject.kind, "subject_id": subject.id, "match_count": len(candidates), "provider": s.provider.Name()}})

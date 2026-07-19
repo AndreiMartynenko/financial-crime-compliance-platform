@@ -9,6 +9,7 @@ Create a protected GitHub environment named `staging` with required reviewers. A
 - `KUBE_CONFIG`: base64-encoded, namespace-scoped kubeconfig;
 - `STAGING_DATABASE_URL`: TLS-enabled PostgreSQL connection string;
 - `STAGING_METRICS_TOKEN`: high-entropy Prometheus bearer token.
+- `STAGING_SMTP_HOST`, `STAGING_SMTP_USERNAME`, `STAGING_SMTP_PASSWORD` and `STAGING_SMTP_FROM`: SMTP delivery configuration; host and sender are required to enable email, while credentials depend on the provider. Leave the host empty to keep email delivery disabled.
 
 Replace `staging.fccp.example.com` and identity-provider URLs in `overlays/staging` before the first deployment. Configure the OIDC client redirect URI as `https://<host>/`.
 

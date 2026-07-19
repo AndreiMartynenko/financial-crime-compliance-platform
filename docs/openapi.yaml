@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.20.0
+  version: 0.21.0
   description: Portfolio API for authenticated customer-risk assessment, sanctions and PEP screening, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
@@ -296,6 +296,31 @@ paths:
       responses:
         "200": {description: Notification updated, content: {application/json: {schema: {$ref: "#/components/schemas/Notification"}}}}
         "404": {description: Notification not found}
+  /v1/notification-preferences:
+    get:
+      operationId: getNotificationPreferences
+      summary: Get notification delivery preferences for the authenticated operator
+      security: [{bearerAuth: []}]
+      responses:
+        "200": {description: Current preferences, content: {application/json: {schema: {$ref: "#/components/schemas/NotificationPreference"}}}}
+    put:
+      operationId: updateNotificationPreferences
+      summary: Replace notification delivery preferences for the authenticated operator
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email_address, email_enabled]
+              properties:
+                email_address:
+                  oneOf: [{type: string, format: email}, {const: ""}]
+                email_enabled: {type: boolean}
+      responses:
+        "200": {description: Preferences updated, content: {application/json: {schema: {$ref: "#/components/schemas/NotificationPreference"}}}}
+        "400": {description: Invalid email preference}
   /v1/customers/{customer_id}/approve:
     post:
       operationId: approveCustomer
@@ -853,6 +878,15 @@ components:
       required: [items]
       properties:
         items: {type: array, items: {$ref: "#/components/schemas/Notification"}}
+    NotificationPreference:
+      type: object
+      required: [actor_subject, email_address, email_enabled, updated_at]
+      properties:
+        actor_subject: {type: string}
+        email_address:
+          oneOf: [{type: string, format: email}, {const: ""}]
+        email_enabled: {type: boolean}
+        updated_at: {type: string, format: date-time}
     RiskFactors:
       type: object
       required: [country_risk, source_of_funds_verified]

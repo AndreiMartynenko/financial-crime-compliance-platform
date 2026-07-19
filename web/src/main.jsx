@@ -42,6 +42,7 @@ function App() {
   const [alerts, setAlerts] = useState([])
   const [cases, setCases] = useState([])
   const [notifications, setNotifications] = useState([])
+  const [notificationPreference, setNotificationPreference] = useState({email_address:'',email_enabled:false})
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const token = user?.access_token
@@ -61,10 +62,10 @@ function App() {
     if (!token) return
     setLoading(true); setError('')
     try {
-      const [customerPage, alertPage, casePage, notificationPage] = await Promise.all([
-        api('/v1/customers?page_size=100', token), api('/v1/alerts?page_size=100', token), api('/v1/cases?page_size=100', token), api('/v1/notifications', token),
+      const [customerPage, alertPage, casePage, notificationPage, preference] = await Promise.all([
+        api('/v1/customers?page_size=100', token), api('/v1/alerts?page_size=100', token), api('/v1/cases?page_size=100', token), api('/v1/notifications', token), api('/v1/notification-preferences', token),
       ])
-      setCustomers(customerPage.items || []); setAlerts(alertPage.items || []); setCases(casePage.items || []); setNotifications(notificationPage.items || [])
+      setCustomers(customerPage.items || []); setAlerts(alertPage.items || []); setCases(casePage.items || []); setNotifications(notificationPage.items || []); setNotificationPreference(preference)
     } catch (e) { setError(e.message) } finally { setLoading(false) }
   }
   useEffect(() => { load() }, [token])
@@ -75,20 +76,20 @@ function App() {
   const openAlerts = alerts.filter(alert => alert.status === 'open')
   const openCases = cases.filter(item => item.status !== 'resolved')
   const nav = [['dashboard', 'Overview'], ['customers', 'Customers'], ['cdd', 'KYC / CDD'], ['screening', 'Screening'], ['notifications', `Inbox ${notifications.filter(item=>!item.read).length}`], ['approvals', `Approvals ${pending.length}`], ['alerts', `Alerts ${openAlerts.length}`], ['cases', `Cases ${openCases.length}`]]
-  return <div className="shell"><aside><div className="brand"><div className="brand-mark small">FC</div><div><strong>Northstar</strong><span>Compliance OS</span></div></div><nav>{nav.map(([id, label]) => <button className={view === id ? 'active' : ''} onClick={() => setView(id)} key={id}>{label}</button>)}</nav><div className="profile"><div className="avatar">{(claims.preferred_username || claims.sub)?.[0]?.toUpperCase()}</div><div><strong>{claims.preferred_username || claims.sub}</strong><span>{role}</span></div><button aria-label="Sign out" onClick={() => oidc.signoutRedirect()}>↗</button></div></aside><main className="workspace"><header><div><p className="eyebrow">Operations / {view}</p><h1>{view[0].toUpperCase() + view.slice(1)}</h1></div><div className="header-actions"><span className="live">● Systems operational</span><button className="secondary" onClick={load}>Refresh</button></div></header>{error && <div className="error">{error}</div>}{loading ? <div className="loading">Loading verified compliance data…</div> : <Content view={view} customers={customers} alerts={alerts} cases={cases} notifications={notifications} token={token} role={role} reload={load}/>}</main></div>
+  return <div className="shell"><aside><div className="brand"><div className="brand-mark small">FC</div><div><strong>Northstar</strong><span>Compliance OS</span></div></div><nav>{nav.map(([id, label]) => <button className={view === id ? 'active' : ''} onClick={() => setView(id)} key={id}>{label}</button>)}</nav><div className="profile"><div className="avatar">{(claims.preferred_username || claims.sub)?.[0]?.toUpperCase()}</div><div><strong>{claims.preferred_username || claims.sub}</strong><span>{role}</span></div><button aria-label="Sign out" onClick={() => oidc.signoutRedirect()}>↗</button></div></aside><main className="workspace"><header><div><p className="eyebrow">Operations / {view}</p><h1>{view[0].toUpperCase() + view.slice(1)}</h1></div><div className="header-actions"><span className="live">● Systems operational</span><button className="secondary" onClick={load}>Refresh</button></div></header>{error && <div className="error">{error}</div>}{loading ? <div className="loading">Loading verified compliance data…</div> : <Content view={view} customers={customers} alerts={alerts} cases={cases} notifications={notifications} notificationPreference={notificationPreference} token={token} role={role} reload={load}/>}</main></div>
 }
 
-function Content({view, customers, alerts, cases, notifications, token, role, reload}) {
+function Content({view, customers, alerts, cases, notifications, notificationPreference, token, role, reload}) {
   if (view === 'dashboard') return <Dashboard customers={customers} alerts={alerts}/>
   if (view === 'customers') return <Customers items={customers} alerts={alerts} cases={cases} token={token} role={role} reload={reload}/>
   if (view === 'cdd') return <CDDWorkspace customers={customers} token={token} role={role}/>
   if (view === 'screening') return <ScreeningWorkspace customers={customers} token={token} role={role}/>
-  if (view === 'notifications') return <NotificationInbox items={notifications} token={token} reload={reload}/>
+  if (view === 'notifications') return <NotificationInbox items={notifications} preference={notificationPreference} token={token} reload={reload}/>
   if (view === 'approvals') return <Approvals items={customers.filter(customer => customer.status === 'pending_approval')} token={token} role={role} reload={reload}/>
   if (view === 'alerts') return <Alerts items={alerts} cases={cases} token={token} role={role} reload={reload}/>
   return <Cases items={cases} token={token} role={role} reload={reload}/>
 }
-function NotificationInbox({items,token,reload}){const markRead=async id=>{await api(`/v1/notifications/${id}/read`,token,{method:'POST'});await reload()};return <section className="panel"><div className="panel-title"><div><p className="eyebrow">Operational notifications</p><h2>Compliance inbox</h2></div><span>{items.filter(item=>!item.read).length} unread</span></div>{items.length?<div className="notification-list">{items.map(item=><article className={item.read?'read':''} key={item.id}><div><strong>{item.title}</strong><p>{item.message}</p><small>{new Date(item.created_at).toLocaleString()}</small></div>{item.read?<span>Read by {item.read_by}</span>:<button className="compact" onClick={()=>markRead(item.id)}>Mark read</button>}</article>)}</div>:<Empty text="No notifications" detail="New screening matches will appear here automatically."/>}</section>}
+function NotificationInbox({items,preference,token,reload}){const [email,setEmail]=useState(preference.email_address||'');const [enabled,setEnabled]=useState(preference.email_enabled||false);useEffect(()=>{setEmail(preference.email_address||'');setEnabled(preference.email_enabled||false)},[preference]);const markRead=async id=>{await api(`/v1/notifications/${id}/read`,token,{method:'POST'});await reload()};const save=async e=>{e.preventDefault();await api('/v1/notification-preferences',token,{method:'PUT',body:JSON.stringify({email_address:email,email_enabled:enabled})});await reload()};return <><section className="panel"><div className="panel-title"><div><p className="eyebrow">Delivery preferences</p><h2>Email alerts</h2></div></div><form className="preference-form" onSubmit={save}><label>Email address<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required={enabled}/></label><label className="checkbox"><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/>Send screening-match alerts by email</label><button type="submit">Save preferences</button></form></section><section className="panel"><div className="panel-title"><div><p className="eyebrow">Operational notifications</p><h2>Compliance inbox</h2></div><span>{items.filter(item=>!item.read).length} unread</span></div>{items.length?<div className="notification-list">{items.map(item=><article className={item.read?'read':''} key={item.id}><div><strong>{item.title}</strong><p>{item.message}</p><small>{new Date(item.created_at).toLocaleString()}</small></div>{item.read?<span>Read by {item.read_by}</span>:<button className="compact" onClick={()=>markRead(item.id)}>Mark read</button>}</article>)}</div>:<Empty text="No notifications" detail="New screening matches will appear here automatically."/>}</section></>}
 function Dashboard({customers, alerts}) {
   const cards = [['Total customers', customers.length, 'All monitored entities'], ['Pending approval', customers.filter(c => c.status === 'pending_approval').length, 'Requires independent review'], ['Open alerts', alerts.filter(a => a.status === 'open').length, 'Investigation queue'], ['High severity', alerts.filter(a => a.status === 'open' && a.severity === 'high').length, 'Immediate attention']]
   return <><section className="metrics">{cards.map(([label, value, summary]) => <article key={label}><span>{label}</span><strong>{value}</strong><small>{summary}</small></article>)}</section><section className="panel"><div className="panel-title"><div><p className="eyebrow">Live queue</p><h2>Recent monitoring alerts</h2></div></div><AlertTable items={alerts.slice(0, 6)}/></section></>

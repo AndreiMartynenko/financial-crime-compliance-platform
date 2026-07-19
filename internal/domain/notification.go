@@ -7,6 +7,13 @@ import (
 
 var ErrNotificationNotFound = errors.New("notification not found")
 
+type NotificationPreference struct {
+	ActorSubject string    `json:"actor_subject"`
+	EmailAddress string    `json:"email_address"`
+	EmailEnabled bool      `json:"email_enabled"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 type Notification struct {
 	ID         string     `json:"id"`
 	CustomerID string     `json:"customer_id"`

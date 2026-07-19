@@ -365,7 +365,7 @@ func TestScreeningPersistsAndDisposesMatchAtomically(t *testing.T) {
 	match := domain.ScreeningMatch{ID: "384c015e-5855-42d1-a745-f545489d8c6b", RunID: run.ID, CustomerID: customer.ID, SubjectType: domain.ScreeningCustomer, SubjectID: customer.ID, QueryName: customer.LegalName, ListType: domain.ScreeningSanctions, MatchedName: customer.LegalName, Score: 100, Reason: "exact match", Status: domain.MatchPotential, CreatedAt: now}
 	createdEvent := domain.AuditEvent{ID: "d0b199d7-61c9-42a8-b6dc-2b3c9710ae30", AggregateType: "customer", AggregateID: customer.ID, EventType: "screening.completed", Actor: "analyst", OccurredAt: now, Payload: map[string]any{"matches": float64(1)}}
 	notification := domain.Notification{ID: "1c4b78b8-5f66-46da-b80c-c5cfbe29f2c1", CustomerID: customer.ID, MatchID: match.ID, Type: "screening_match", Title: "Potential sanctions match", Message: "Review match", CreatedAt: now}
-	outbox := domain.OutboxMessage{ID: "c34554d0-6546-49ea-8afc-87aad87a7f74", NotificationID: notification.ID, Destination: "http://webhook.test", Payload: map[string]any{"notification_id": notification.ID}, Status: "pending", NextAttemptAt: now, CreatedAt: now}
+	outbox := domain.OutboxMessage{ID: "c34554d0-6546-49ea-8afc-87aad87a7f74", NotificationID: notification.ID, Channel: "webhook", Destination: "http://webhook.test", Payload: map[string]any{"notification_id": notification.ID}, Status: "pending", NextAttemptAt: now, CreatedAt: now}
 	if err := repo.SaveScreening(ctx, []domain.ScreeningRun{run}, []domain.ScreeningMatch{match}, []domain.Notification{notification}, []domain.OutboxMessage{outbox}, []domain.AuditEvent{createdEvent}); err != nil {
 		t.Fatal(err)
 	}
@@ -381,8 +381,23 @@ func TestScreeningPersistsAndDisposesMatchAtomically(t *testing.T) {
 	if err != nil || len(claimed) < 1 {
 		t.Fatalf("outbox=%+v err=%v", claimed, err)
 	}
+	if claimed[0].Channel != "webhook" {
+		t.Fatalf("outbox channel=%q", claimed[0].Channel)
+	}
 	if err := repo.CompleteOutbox(ctx, outbox.ID, "delivery-worker", now.Add(time.Second), now.Add(time.Second), ""); err != nil {
 		t.Fatal(err)
+	}
+	preference, err := repo.UpsertNotificationPreference(ctx, domain.NotificationPreference{ActorSubject: "reviewer-subject", EmailAddress: "reviewer@example.com", EmailEnabled: true, UpdatedAt: now})
+	if err != nil || !preference.EmailEnabled {
+		t.Fatalf("preference=%+v err=%v", preference, err)
+	}
+	loadedPreference, err := repo.GetNotificationPreference(ctx, "reviewer-subject")
+	if err != nil || loadedPreference.EmailAddress != "reviewer@example.com" {
+		t.Fatalf("loaded preference=%+v err=%v", loadedPreference, err)
+	}
+	recipients, err := repo.ListEmailNotificationRecipients(ctx)
+	if err != nil || len(recipients) != 1 || recipients[0] != "reviewer@example.com" {
+		t.Fatalf("recipients=%v err=%v", recipients, err)
 	}
 	var outboxStatus string
 	if err := pool.QueryRow(ctx, "SELECT status FROM notification_outbox WHERE id=$1", outbox.ID).Scan(&outboxStatus); err != nil || outboxStatus != "delivered" {
@@ -457,8 +472,8 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 12 {
-		t.Fatalf("applied migrations=%d, want 12", migrationCount)
+	if migrationCount != 13 {
+		t.Fatalf("applied migrations=%d, want 13", migrationCount)
 	}
 	return pool
 }

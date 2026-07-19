@@ -895,7 +895,11 @@ func (r *Repository) SaveScreening(ctx context.Context, runs []domain.ScreeningR
 		if marshalErr != nil {
 			return marshalErr
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO notification_outbox(id,notification_id,destination,payload,status,attempts,next_attempt_at,last_error,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, message.ID, message.NotificationID, message.Destination, payload, message.Status, message.Attempts, message.NextAttemptAt, message.LastError, message.CreatedAt); err != nil {
+		channel := message.Channel
+		if channel == "" {
+			channel = "webhook"
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO notification_outbox(id,notification_id,channel,destination,payload,status,attempts,next_attempt_at,last_error,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, message.ID, message.NotificationID, channel, message.Destination, payload, message.Status, message.Attempts, message.NextAttemptAt, message.LastError, message.CreatedAt); err != nil {
 			return err
 		}
 	}
@@ -941,17 +945,45 @@ func (r *Repository) ReadNotification(ctx context.Context, id, actor string, at 
 	}
 	return n, err
 }
+func (r *Repository) GetNotificationPreference(ctx context.Context, actor string) (domain.NotificationPreference, error) {
+	var preference domain.NotificationPreference
+	err := r.pool.QueryRow(ctx, `SELECT actor_subject,email_address,email_enabled,updated_at FROM notification_preferences WHERE actor_subject=$1`, actor).Scan(&preference.ActorSubject, &preference.EmailAddress, &preference.EmailEnabled, &preference.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return preference, domain.ErrNotificationNotFound
+	}
+	return preference, err
+}
+func (r *Repository) UpsertNotificationPreference(ctx context.Context, preference domain.NotificationPreference) (domain.NotificationPreference, error) {
+	err := r.pool.QueryRow(ctx, `INSERT INTO notification_preferences(actor_subject,email_address,email_enabled,updated_at) VALUES($1,$2,$3,$4) ON CONFLICT(actor_subject) DO UPDATE SET email_address=EXCLUDED.email_address,email_enabled=EXCLUDED.email_enabled,updated_at=EXCLUDED.updated_at RETURNING actor_subject,email_address,email_enabled,updated_at`, preference.ActorSubject, preference.EmailAddress, preference.EmailEnabled, preference.UpdatedAt).Scan(&preference.ActorSubject, &preference.EmailAddress, &preference.EmailEnabled, &preference.UpdatedAt)
+	return preference, err
+}
+func (r *Repository) ListEmailNotificationRecipients(ctx context.Context) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `SELECT DISTINCT email_address FROM notification_preferences WHERE email_enabled ORDER BY email_address`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	recipients := []string{}
+	for rows.Next() {
+		var recipient string
+		if err := rows.Scan(&recipient); err != nil {
+			return nil, err
+		}
+		recipients = append(recipients, recipient)
+	}
+	return recipients, rows.Err()
+}
 func scanOutbox(row scanner) (domain.OutboxMessage, error) {
 	var item domain.OutboxMessage
 	var payload []byte
-	err := row.Scan(&item.ID, &item.NotificationID, &item.Destination, &payload, &item.Status, &item.Attempts, &item.NextAttemptAt, &item.LastError, &item.LeaseOwner, &item.LeaseUntil, &item.CreatedAt, &item.DeliveredAt)
+	err := row.Scan(&item.ID, &item.NotificationID, &item.Channel, &item.Destination, &payload, &item.Status, &item.Attempts, &item.NextAttemptAt, &item.LastError, &item.LeaseOwner, &item.LeaseUntil, &item.CreatedAt, &item.DeliveredAt)
 	if err == nil {
 		err = json.Unmarshal(payload, &item.Payload)
 	}
 	return item, err
 }
 
-const outboxReturning = `o.id,o.notification_id,o.destination,o.payload,o.status,o.attempts,o.next_attempt_at,o.last_error,COALESCE(o.lease_owner,''),o.lease_until,o.created_at,o.delivered_at`
+const outboxReturning = `o.id,o.notification_id,o.channel,o.destination,o.payload,o.status,o.attempts,o.next_attempt_at,o.last_error,COALESCE(o.lease_owner,''),o.lease_until,o.created_at,o.delivered_at`
 
 func (r *Repository) ClaimOutbox(ctx context.Context, now time.Time, limit int, owner string, leaseUntil time.Time) ([]domain.OutboxMessage, error) {
 	rows, err := r.pool.Query(ctx, `WITH due AS (SELECT id FROM notification_outbox WHERE status='pending' AND next_attempt_at<=$1 AND (lease_until IS NULL OR lease_until<=$1) ORDER BY next_attempt_at FOR UPDATE SKIP LOCKED LIMIT $2) UPDATE notification_outbox o SET lease_owner=$3,lease_until=$4 FROM due WHERE o.id=due.id RETURNING `+outboxReturning, now, limit, owner, leaseUntil)

@@ -402,6 +402,21 @@ func TestScreeningWorkflow(t *testing.T) {
 	if err := json.NewDecoder(screened.Body).Decode(&result); err != nil || screened.Code != http.StatusCreated || len(result.Matches) != 1 {
 		t.Fatalf("result=%+v status=%d err=%v", result, screened.Code, err)
 	}
+	preferenceRequest := httptest.NewRequest(http.MethodPut, "/v1/notification-preferences", bytes.NewReader([]byte(`{"email_address":"reviewer@example.com","email_enabled":true}`)))
+	preferenceRequest.Header.Set("Authorization", "Bearer "+signedToken("reviewer", auth.RoleReviewer))
+	preferenceResponse := httptest.NewRecorder()
+	h.ServeHTTP(preferenceResponse, preferenceRequest)
+	if preferenceResponse.Code != http.StatusOK {
+		t.Fatalf("update preference=%d %s", preferenceResponse.Code, preferenceResponse.Body.String())
+	}
+	getPreferenceRequest := httptest.NewRequest(http.MethodGet, "/v1/notification-preferences", nil)
+	getPreferenceRequest.Header.Set("Authorization", "Bearer "+signedToken("reviewer", auth.RoleReviewer))
+	getPreferenceResponse := httptest.NewRecorder()
+	h.ServeHTTP(getPreferenceResponse, getPreferenceRequest)
+	var preference domain.NotificationPreference
+	if json.NewDecoder(getPreferenceResponse.Body).Decode(&preference) != nil || !preference.EmailEnabled || preference.EmailAddress != "reviewer@example.com" {
+		t.Fatalf("preference=%+v status=%d", preference, getPreferenceResponse.Code)
+	}
 	notificationRequest := httptest.NewRequest(http.MethodGet, "/v1/notifications", nil)
 	notificationRequest.Header.Set("Authorization", "Bearer "+signedToken("reviewer", auth.RoleReviewer))
 	notificationResponse := httptest.NewRecorder()

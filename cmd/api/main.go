@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/mail"
 	"os"
 	"os/signal"
 	"strconv"
@@ -124,15 +125,39 @@ func run(logger *slog.Logger) error {
 	screeningService.SetLeaseDuration(workerLease)
 	webhookURL := os.Getenv("NOTIFICATION_WEBHOOK_URL")
 	screeningService.SetNotificationWebhook(webhookURL)
+	smtpHost := os.Getenv("SMTP_HOST")
+	smtpPort, err := envInt("SMTP_PORT", 587)
+	if err != nil || smtpPort < 1 || smtpPort > 65535 {
+		return fmt.Errorf("SMTP_PORT must be between 1 and 65535")
+	}
+	smtpFrom := os.Getenv("SMTP_FROM")
+	smtpStartTLS, err := envBool("SMTP_STARTTLS", true)
+	if err != nil {
+		return err
+	}
+	if smtpHost != "" && smtpFrom == "" {
+		return fmt.Errorf("SMTP_FROM is required when SMTP_HOST is configured")
+	}
+	if smtpFrom != "" {
+		address, parseErr := mail.ParseAddress(smtpFrom)
+		if parseErr != nil || address.Address != smtpFrom {
+			return fmt.Errorf("SMTP_FROM must be a valid bare email address")
+		}
+	}
 	metrics := observability.NewRegistry()
 	metrics.SetMetricsToken(os.Getenv("METRICS_TOKEN"))
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go runScreeningWorker(workerCtx, logger, screeningService, metrics, workerInterval)
+	senders := map[string]application.DeliverySender{}
 	if webhookURL != "" {
-		deliveryService := application.NewDeliveryService(repo, notification.NewWebhookSender(providerTimeout))
-		go runDeliveryWorker(workerCtx, logger, deliveryService, metrics, workerInterval)
+		senders["webhook"] = notification.NewWebhookSender(providerTimeout)
 	}
+	if smtpHost != "" {
+		senders["email"] = notification.NewSMTPSender(notification.SMTPConfig{Host: smtpHost, Port: smtpPort, Username: os.Getenv("SMTP_USERNAME"), Password: os.Getenv("SMTP_PASSWORD"), From: smtpFrom, StartTLS: smtpStartTLS, Timeout: providerTimeout})
+	}
+	deliveryService := application.NewDeliveryService(repo, notification.NewRouter(senders))
+	go runDeliveryWorker(workerCtx, logger, deliveryService, metrics, workerInterval)
 	handler := httpapi.NewHandler(service, transactionService, queryService, caseService, dueDiligenceService, screeningService, logger, authenticator, pool, metrics)
 	handler = security.Headers(security.NewRateLimiter(rateLimit, rateBurst).Middleware(handler))
 
@@ -248,6 +273,17 @@ func envFloat(name string, fallback float64) (float64, error) {
 	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil || parsed <= 0 || parsed > 10000 {
 		return 0, fmt.Errorf("%s must be a positive number up to 10000", name)
+	}
+	return parsed, nil
+}
+func envBool(name string, fallback bool) (bool, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false", name)
 	}
 	return parsed, nil
 }

@@ -12,20 +12,21 @@ import (
 )
 
 type Repository struct {
-	mu                 sync.RWMutex
-	customers          map[string]domain.Customer
-	transactions       map[string]domain.Transaction
-	alerts             map[string]domain.Alert
-	idempotency        map[string]string
-	events             map[string][]domain.AuditEvent
-	cases              map[string]domain.InvestigationCase
-	caseComments       map[string][]domain.CaseComment
-	cddProfiles        map[string]domain.CDDProfile
-	owners             map[string][]domain.BeneficialOwner
-	documents          map[string]domain.KYCDocument
-	screeningMatches   map[string]domain.ScreeningMatch
-	screeningSchedules map[string]domain.ScreeningSchedule
-	notifications      map[string]domain.Notification
+	mu                      sync.RWMutex
+	customers               map[string]domain.Customer
+	transactions            map[string]domain.Transaction
+	alerts                  map[string]domain.Alert
+	idempotency             map[string]string
+	events                  map[string][]domain.AuditEvent
+	cases                   map[string]domain.InvestigationCase
+	caseComments            map[string][]domain.CaseComment
+	cddProfiles             map[string]domain.CDDProfile
+	owners                  map[string][]domain.BeneficialOwner
+	documents               map[string]domain.KYCDocument
+	screeningMatches        map[string]domain.ScreeningMatch
+	screeningSchedules      map[string]domain.ScreeningSchedule
+	notifications           map[string]domain.Notification
+	notificationPreferences map[string]domain.NotificationPreference
 }
 
 func (r *Repository) GetCustomer(_ context.Context, id string) (domain.Customer, error) {
@@ -151,7 +152,7 @@ func limit[T any](items []T, size int) []T {
 }
 
 func NewRepository() *Repository {
-	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), idempotency: make(map[string]string), events: make(map[string][]domain.AuditEvent), cases: make(map[string]domain.InvestigationCase), caseComments: make(map[string][]domain.CaseComment), cddProfiles: make(map[string]domain.CDDProfile), owners: make(map[string][]domain.BeneficialOwner), documents: make(map[string]domain.KYCDocument), screeningMatches: make(map[string]domain.ScreeningMatch), screeningSchedules: make(map[string]domain.ScreeningSchedule), notifications: make(map[string]domain.Notification)}
+	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), idempotency: make(map[string]string), events: make(map[string][]domain.AuditEvent), cases: make(map[string]domain.InvestigationCase), caseComments: make(map[string][]domain.CaseComment), cddProfiles: make(map[string]domain.CDDProfile), owners: make(map[string][]domain.BeneficialOwner), documents: make(map[string]domain.KYCDocument), screeningMatches: make(map[string]domain.ScreeningMatch), screeningSchedules: make(map[string]domain.ScreeningSchedule), notifications: make(map[string]domain.Notification), notificationPreferences: make(map[string]domain.NotificationPreference)}
 }
 
 func (r *Repository) UpsertScreeningSchedule(_ context.Context, schedule domain.ScreeningSchedule, event domain.AuditEvent) (domain.ScreeningSchedule, error) {
@@ -253,6 +254,33 @@ func (r *Repository) ReadNotification(_ context.Context, id, actor string, at ti
 	n.ReadAt = &at
 	r.notifications[id] = n
 	return n, nil
+}
+func (r *Repository) GetNotificationPreference(_ context.Context, actor string) (domain.NotificationPreference, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	preference, ok := r.notificationPreferences[actor]
+	if !ok {
+		return preference, domain.ErrNotificationNotFound
+	}
+	return preference, nil
+}
+func (r *Repository) UpsertNotificationPreference(_ context.Context, preference domain.NotificationPreference) (domain.NotificationPreference, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notificationPreferences[preference.ActorSubject] = preference
+	return preference, nil
+}
+func (r *Repository) ListEmailNotificationRecipients(_ context.Context) ([]string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	recipients := []string{}
+	for _, preference := range r.notificationPreferences {
+		if preference.EmailEnabled {
+			recipients = append(recipients, preference.EmailAddress)
+		}
+	}
+	sort.Strings(recipients)
+	return recipients, nil
 }
 func (r *Repository) ListScreeningMatches(_ context.Context, customerID string) ([]domain.ScreeningMatch, error) {
 	r.mu.RLock()

@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Backup and disaster recovery
+## Current milestone: Notification channels and preferences
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -98,6 +98,10 @@ Implemented:
 - atomic PostgreSQL custom-format backups with SHA-256 integrity files;
 - guarded, transactional database restores and disposable restore verification;
 - CI restore drills and a documented disaster-recovery runbook.
+- authenticated operator email-notification preferences;
+- channel-aware transactional outbox records for webhook and email delivery;
+- SMTP delivery with STARTTLS, authentication, bounded timeouts and existing retry/lease recovery;
+- notification-channel settings in the operations portal.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -145,7 +149,13 @@ Runtime environment variables:
 | `SCREENING_PROVIDER_API_KEY` | no | none |
 | `SCREENING_PROVIDER_TIMEOUT` | no | `5s` |
 | `SCREENING_PROVIDER_RETRIES` | no | `2` |
-| `NOTIFICATION_WEBHOOK_URL` | no | delivery disabled |
+| `NOTIFICATION_WEBHOOK_URL` | no | webhook delivery disabled |
+| `SMTP_HOST` | no | email delivery disabled |
+| `SMTP_PORT` | no | `587` |
+| `SMTP_USERNAME` | no | none |
+| `SMTP_PASSWORD` | no | none |
+| `SMTP_FROM` | required with `SMTP_HOST` | none |
+| `SMTP_STARTTLS` | no | `true` |
 | `OTEL_SERVICE_NAME` | no | `fccp-api` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | no | tracing stays local/no exporter |
 | `JWT_ISSUER` | yes | Keycloak realm URL in Compose |
@@ -282,9 +292,9 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Email delivery adapter and notification-channel preferences.
-2. Production provider onboarding and SLO validation.
-3. Release hardening and a polished public demo package.
+1. Production provider onboarding and SLO validation.
+2. Release hardening and a polished public demo package.
+3. Timed staging resilience and recovery exercises.
 
 ## Important boundary
 

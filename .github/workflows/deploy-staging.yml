@@ -47,9 +47,20 @@ jobs:
         env:
           DATABASE_URL: "${{ secrets.STAGING_DATABASE_URL }}"
           METRICS_TOKEN: "${{ secrets.STAGING_METRICS_TOKEN }}"
+          SMTP_HOST: "${{ secrets.STAGING_SMTP_HOST }}"
+          SMTP_USERNAME: "${{ secrets.STAGING_SMTP_USERNAME }}"
+          SMTP_PASSWORD: "${{ secrets.STAGING_SMTP_PASSWORD }}"
+          SMTP_FROM: "${{ secrets.STAGING_SMTP_FROM }}"
         run: |
           kubectl create namespace fccp-staging --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n fccp-staging create secret generic fccp-secrets --from-literal=DATABASE_URL="$DATABASE_URL" --from-literal=METRICS_TOKEN="$METRICS_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n fccp-staging create secret generic fccp-secrets \
+            --from-literal=DATABASE_URL="$DATABASE_URL" \
+            --from-literal=METRICS_TOKEN="$METRICS_TOKEN" \
+            --from-literal=SMTP_HOST="$SMTP_HOST" \
+            --from-literal=SMTP_USERNAME="$SMTP_USERNAME" \
+            --from-literal=SMTP_PASSWORD="$SMTP_PASSWORD" \
+            --from-literal=SMTP_FROM="$SMTP_FROM" \
+            --dry-run=client -o yaml | kubectl apply -f -
       - name: Deploy immutable images
         run: |
           kubectl apply -k deploy/k8s/overlays/staging

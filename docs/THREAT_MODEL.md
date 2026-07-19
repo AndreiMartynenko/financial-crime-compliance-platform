@@ -2,7 +2,7 @@
 
 ## Scope and assets
 
-The protected assets are customer identity and KYC data, risk decisions, screening matches, investigation records, audit history, access tokens, provider credentials and notification destinations. Trust boundaries exist between the browser and Nginx, Nginx and the API, the API and PostgreSQL/Keycloak, and the API and external screening or webhook providers.
+The protected assets are customer identity and KYC data, risk decisions, screening matches, investigation records, audit history, access tokens, provider credentials and notification destinations. Trust boundaries exist between the browser and Nginx, Nginx and the API, the API and PostgreSQL/Keycloak, and the API and external screening, webhook or SMTP providers.
 
 ## Principal threats and controls
 
@@ -15,6 +15,8 @@ The protected assets are customer identity and KYC data, risk decisions, screeni
 | Audit or state tampering | PostgreSQL transactions, append-only audit events and actor attribution | Restrict database roles and archive signed audit exports to immutable storage |
 | Duplicate background processing | PostgreSQL leases and `SKIP LOCKED` claims | Monitor lease age and test failover under multiple production replicas |
 | SSRF through provider/webhook configuration | Destinations are server-side environment configuration, not caller input | Allow-list hosts and enforce egress policy in the deployment network |
+| Notification disclosure or header injection | Email opt-in is bound to the authenticated subject, addresses are parsed server-side, headers are stripped of CR/LF, and SMTP defaults to STARTTLS | Approve recipient domains, use a dedicated transactional-email account and avoid including unnecessary customer data |
+| Duplicate external delivery | Transactional outbox, leases and persisted attempts provide at-least-once delivery | Consumers must deduplicate webhook IDs; document that SMTP can duplicate after an ambiguous provider response |
 | Secret leakage | Secrets are environment-driven and excluded from API responses | Use a managed secret store; never use Compose demo credentials outside local development |
 | Supply-chain compromise | Go tests/vet, npm audit, govulncheck and Trivy CI scanning | Pin deployment images by digest and review automated dependency updates |
 | Metrics/operations disclosure | `/metrics` uses a separate bearer credential | Keep Prometheus, Grafana and Jaeger on a private operations network with SSO |

@@ -144,7 +144,7 @@ func (r *Registry) Handler(w http.ResponseWriter, request *http.Request) {
 	fmt.Fprintln(w, "# HELP fccp_notification_delivery_errors_total Notification delivery worker failures.")
 	fmt.Fprintln(w, "# TYPE fccp_notification_delivery_errors_total counter")
 	fmt.Fprintf(w, "fccp_notification_delivery_errors_total %d\n", r.deliveryErrors)
-	fmt.Fprintln(w, "# HELP fccp_notification_deliveries_completed_total Successfully delivered webhook notifications.")
+	fmt.Fprintln(w, "# HELP fccp_notification_deliveries_completed_total Successfully delivered external notifications.")
 	fmt.Fprintln(w, "# TYPE fccp_notification_deliveries_completed_total counter")
 	fmt.Fprintf(w, "fccp_notification_deliveries_completed_total %d\n", r.deliveriesCompleted)
 	fmt.Fprintln(w, "# HELP fccp_notification_outbox_pending Pending notification outbox messages.")

@@ -67,7 +67,40 @@ func NewHandler(service *application.OnboardingService, transactionService *appl
 	mux.Handle("PUT /v1/customers/{customer_id}/screening-schedule", authenticate(authenticator, requireRoles(h.updateScreeningSchedule, auth.RoleAnalyst, auth.RoleAdmin)))
 	mux.Handle("GET /v1/notifications", authenticate(authenticator, requireRoles(h.listNotifications, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/notifications/{notification_id}/read", authenticate(authenticator, requireRoles(h.readNotification, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("GET /v1/notification-preferences", authenticate(authenticator, requireRoles(h.getNotificationPreference, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("PUT /v1/notification-preferences", authenticate(authenticator, requireRoles(h.updateNotificationPreference, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	return observability.TraceMiddleware(metrics.Middleware(requestLogging(logger, mux)))
+}
+
+type notificationPreferenceRequest struct {
+	EmailAddress string `json:"email_address"`
+	EmailEnabled bool   `json:"email_enabled"`
+}
+
+func (h *Handler) getNotificationPreference(w http.ResponseWriter, r *http.Request) {
+	preference, err := h.screeningService.GetNotificationPreference(r.Context(), principalSubject(r))
+	if err != nil {
+		h.readError(w, "get notification preference", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, preference)
+}
+func (h *Handler) updateNotificationPreference(w http.ResponseWriter, r *http.Request) {
+	var request notificationPreferenceRequest
+	if decodeJSON(w, r, &request) != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "Request body is not valid")
+		return
+	}
+	preference, err := h.screeningService.ConfigureNotificationPreference(r.Context(), principalSubject(r), request.EmailAddress, request.EmailEnabled)
+	if errors.Is(err, application.ErrInvalidNotificationPreference) {
+		writeError(w, http.StatusBadRequest, "invalid_notification_preference", "A valid email address is required when email notifications are enabled")
+		return
+	}
+	if err != nil {
+		h.readError(w, "update notification preference", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, preference)
 }
 func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
 	items, err := h.screeningService.ListNotifications(r.Context(), 100)
