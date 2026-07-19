@@ -331,6 +331,56 @@ func TestInvestigationCaseWorkflow(t *testing.T) {
 	}
 }
 
+func TestDueDiligenceWorkflow(t *testing.T) {
+	repo := memory.NewRepository()
+	h := testHandler(t, repo)
+	create := httptest.NewRequest(http.MethodPost, "/v1/customers", bytes.NewReader([]byte(`{"type":"company","legal_name":"CDD Test Ltd","country_code":"GB","risk_factors":{"country_risk":"low","source_of_funds_verified":true}}`)))
+	create.Header.Set("Authorization", "Bearer "+signedToken("analyst", auth.RoleAnalyst))
+	createdResponse := httptest.NewRecorder()
+	h.ServeHTTP(createdResponse, create)
+	var customer domain.Customer
+	if err := json.NewDecoder(createdResponse.Body).Decode(&customer); err != nil {
+		t.Fatal(err)
+	}
+	profile := httptest.NewRequest(http.MethodPut, "/v1/customers/"+customer.ID+"/due-diligence", bytes.NewReader([]byte(`{"source_of_wealth":"Business income","business_purpose":"Payments","expected_monthly_volume_minor":5000000,"currency":"GBP","status":"in_review"}`)))
+	profile.Header.Set("Authorization", "Bearer "+signedToken("analyst", auth.RoleAnalyst))
+	profileResponse := httptest.NewRecorder()
+	h.ServeHTTP(profileResponse, profile)
+	if profileResponse.Code != http.StatusOK {
+		t.Fatalf("profile=%d %s", profileResponse.Code, profileResponse.Body.String())
+	}
+	owner := httptest.NewRequest(http.MethodPost, "/v1/customers/"+customer.ID+"/beneficial-owners", bytes.NewReader([]byte(`{"full_name":"Ada Owner","ownership_percent":80,"country_code":"GB","pep":false}`)))
+	owner.Header.Set("Authorization", "Bearer "+signedToken("analyst", auth.RoleAnalyst))
+	ownerResponse := httptest.NewRecorder()
+	h.ServeHTTP(ownerResponse, owner)
+	if ownerResponse.Code != http.StatusCreated {
+		t.Fatalf("owner=%d %s", ownerResponse.Code, ownerResponse.Body.String())
+	}
+	doc := httptest.NewRequest(http.MethodPost, "/v1/customers/"+customer.ID+"/kyc-documents", bytes.NewReader([]byte(`{"type":"incorporation_certificate","reference":"DOC-1"}`)))
+	doc.Header.Set("Authorization", "Bearer "+signedToken("analyst", auth.RoleAnalyst))
+	docResponse := httptest.NewRecorder()
+	h.ServeHTTP(docResponse, doc)
+	var document domain.KYCDocument
+	if err := json.NewDecoder(docResponse.Body).Decode(&document); err != nil || docResponse.Code != http.StatusCreated {
+		t.Fatalf("document=%+v status=%d err=%v", document, docResponse.Code, err)
+	}
+	review := httptest.NewRequest(http.MethodPost, "/v1/kyc-documents/"+document.ID+"/review", bytes.NewReader([]byte(`{"status":"verified"}`)))
+	review.Header.Set("Authorization", "Bearer "+signedToken("reviewer", auth.RoleReviewer))
+	reviewResponse := httptest.NewRecorder()
+	h.ServeHTTP(reviewResponse, review)
+	if reviewResponse.Code != http.StatusOK {
+		t.Fatalf("review=%d %s", reviewResponse.Code, reviewResponse.Body.String())
+	}
+	get := httptest.NewRequest(http.MethodGet, "/v1/customers/"+customer.ID+"/due-diligence", nil)
+	get.Header.Set("Authorization", "Bearer "+signedToken("reviewer", auth.RoleReviewer))
+	getResponse := httptest.NewRecorder()
+	h.ServeHTTP(getResponse, get)
+	var details domain.DueDiligenceDetails
+	if err := json.NewDecoder(getResponse.Body).Decode(&details); err != nil || len(details.Documents) != 1 || details.Documents[0].Status != domain.DocumentVerified {
+		t.Fatalf("details=%+v err=%v", details, err)
+	}
+}
+
 func TestListCustomersUsesCursorPagination(t *testing.T) {
 	t.Parallel()
 	repo := memory.NewRepository()
@@ -384,6 +434,7 @@ func TestReadinessFailsWhenDatabaseIsUnavailable(t *testing.T) {
 	h := NewHandler(
 		application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo),
 		application.NewCaseService(repo),
+		application.NewDueDiligenceService(repo),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator,
 		healthCheckerFunc(func(context.Context) error { return errors.New("database unavailable") }),
 	)
@@ -415,7 +466,7 @@ func testHandler(t *testing.T, repo *memory.Repository) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo), application.NewCaseService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator, healthCheckerFunc(func(context.Context) error { return nil }))
+	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo), application.NewCaseService(repo), application.NewDueDiligenceService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator, healthCheckerFunc(func(context.Context) error { return nil }))
 }
 
 type healthCheckerFunc func(context.Context) error

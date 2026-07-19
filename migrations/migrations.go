@@ -26,6 +26,9 @@ var transactionIdempotencySchema string
 //go:embed 000006_case_management.up.sql
 var caseManagementSchema string
 
+//go:embed 000007_kyc_cdd.up.sql
+var kycCDDSchema string
+
 func Up(ctx context.Context, pool *pgxpool.Pool) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -54,6 +57,7 @@ func Up(ctx context.Context, pool *pgxpool.Pool) error {
 		{4, "monitoring_alerts", monitoringAlertsSchema},
 		{5, "transaction_idempotency", transactionIdempotencySchema},
 		{6, "case_management", caseManagementSchema},
+		{7, "kyc_cdd", kycCDDSchema},
 	}
 	for _, migration := range migrationList {
 		var applied bool

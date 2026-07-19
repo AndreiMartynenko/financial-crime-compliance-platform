@@ -64,7 +64,8 @@ func run(logger *slog.Logger) error {
 	transactionService := application.NewTransactionService(repo)
 	queryService := application.NewQueryService(repo)
 	caseService := application.NewCaseService(repo)
-	handler := httpapi.NewHandler(service, transactionService, queryService, caseService, logger, authenticator, pool)
+	dueDiligenceService := application.NewDueDiligenceService(repo)
+	handler := httpapi.NewHandler(service, transactionService, queryService, caseService, dueDiligenceService, logger, authenticator, pool)
 
 	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
 	serverErrors := make(chan error, 1)

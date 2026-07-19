@@ -20,6 +20,9 @@ type Repository struct {
 	events       map[string][]domain.AuditEvent
 	cases        map[string]domain.InvestigationCase
 	caseComments map[string][]domain.CaseComment
+	cddProfiles  map[string]domain.CDDProfile
+	owners       map[string][]domain.BeneficialOwner
+	documents    map[string]domain.KYCDocument
 }
 
 func (r *Repository) GetCustomer(_ context.Context, id string) (domain.Customer, error) {
@@ -145,7 +148,71 @@ func limit[T any](items []T, size int) []T {
 }
 
 func NewRepository() *Repository {
-	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), idempotency: make(map[string]string), events: make(map[string][]domain.AuditEvent), cases: make(map[string]domain.InvestigationCase), caseComments: make(map[string][]domain.CaseComment)}
+	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), idempotency: make(map[string]string), events: make(map[string][]domain.AuditEvent), cases: make(map[string]domain.InvestigationCase), caseComments: make(map[string][]domain.CaseComment), cddProfiles: make(map[string]domain.CDDProfile), owners: make(map[string][]domain.BeneficialOwner), documents: make(map[string]domain.KYCDocument)}
+}
+
+func (r *Repository) GetDueDiligence(_ context.Context, id string) (domain.DueDiligenceDetails, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.customers[id]; !ok {
+		return domain.DueDiligenceDetails{}, domain.ErrCustomerNotFound
+	}
+	profile, ok := r.cddProfiles[id]
+	if !ok {
+		profile = domain.CDDProfile{CustomerID: id, Status: domain.CDDIncomplete}
+	}
+	docs := []domain.KYCDocument{}
+	for _, d := range r.documents {
+		if d.CustomerID == id {
+			docs = append(docs, d)
+		}
+	}
+	return domain.DueDiligenceDetails{Profile: profile, BeneficialOwners: append([]domain.BeneficialOwner(nil), r.owners[id]...), Documents: docs}, nil
+}
+func (r *Repository) UpsertCDDProfile(_ context.Context, p domain.CDDProfile, event domain.AuditEvent) (domain.CDDProfile, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.customers[p.CustomerID]; !ok {
+		return p, domain.ErrCustomerNotFound
+	}
+	r.cddProfiles[p.CustomerID] = p
+	r.events[p.CustomerID] = append(r.events[p.CustomerID], event)
+	return p, nil
+}
+func (r *Repository) AddBeneficialOwner(_ context.Context, o domain.BeneficialOwner, event domain.AuditEvent) (domain.BeneficialOwner, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.customers[o.CustomerID]; !ok {
+		return o, domain.ErrCustomerNotFound
+	}
+	r.owners[o.CustomerID] = append(r.owners[o.CustomerID], o)
+	r.events[o.CustomerID] = append(r.events[o.CustomerID], event)
+	return o, nil
+}
+func (r *Repository) AddKYCDocument(_ context.Context, d domain.KYCDocument, event domain.AuditEvent) (domain.KYCDocument, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.customers[d.CustomerID]; !ok {
+		return d, domain.ErrCustomerNotFound
+	}
+	r.documents[d.ID] = d
+	r.events[d.CustomerID] = append(r.events[d.CustomerID], event)
+	return d, nil
+}
+func (r *Repository) ReviewKYCDocument(_ context.Context, id string, status domain.DocumentStatus, actor string, event domain.AuditEvent) (domain.KYCDocument, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.documents[id]
+	if !ok || d.Status != domain.DocumentPending {
+		return d, domain.ErrReviewConflict
+	}
+	d.Status = status
+	d.VerifiedBy = actor
+	d.VerifiedAt = &event.OccurredAt
+	event.AggregateID = d.CustomerID
+	r.documents[id] = d
+	r.events[d.CustomerID] = append(r.events[d.CustomerID], event)
+	return d, nil
 }
 
 func (r *Repository) CreateCase(_ context.Context, item domain.InvestigationCase, event domain.AuditEvent) (domain.InvestigationCase, error) {

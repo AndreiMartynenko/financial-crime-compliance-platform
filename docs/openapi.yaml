@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.10.0
+  version: 0.11.0
   description: Portfolio API for authenticated customer-risk assessment, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
@@ -138,6 +138,65 @@ paths:
               schema: {$ref: "#/components/schemas/AuditEventPage"}
         "404": {description: Customer not found}
         "422": {description: Invalid pagination cursor}
+  /v1/customers/{customer_id}/due-diligence:
+    get:
+      operationId: getDueDiligence
+      summary: Get the CDD profile, beneficial owners and KYC documents
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      responses:
+        "200": {description: Customer due-diligence record, content: {application/json: {schema: {$ref: "#/components/schemas/DueDiligenceDetails"}}}}
+        "404": {description: Customer not found}
+    put:
+      operationId: updateDueDiligence
+      summary: Create or update a CDD profile
+      description: Requires analyst or admin role. The profile and audit event are persisted atomically.
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/CDDProfile"}}}}
+      responses:
+        "200": {description: CDD profile updated, content: {application/json: {schema: {$ref: "#/components/schemas/CDDProfile"}}}}
+        "422": {description: CDD profile failed validation}
+  /v1/customers/{customer_id}/beneficial-owners:
+    post:
+      operationId: addBeneficialOwner
+      summary: Record a beneficial owner
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/BeneficialOwner"}}}}
+      responses:
+        "201": {description: Owner and audit event created atomically, content: {application/json: {schema: {$ref: "#/components/schemas/BeneficialOwner"}}}}
+  /v1/customers/{customer_id}/kyc-documents:
+    post:
+      operationId: addKYCDocument
+      summary: Register KYC document evidence
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/KYCDocument"}}}}
+      responses:
+        "201": {description: Pending document and audit event created atomically, content: {application/json: {schema: {$ref: "#/components/schemas/KYCDocument"}}}}
+  /v1/kyc-documents/{document_id}/review:
+    post:
+      operationId: reviewKYCDocument
+      summary: Independently verify or reject KYC evidence
+      description: Requires reviewer or admin role.
+      security: [{bearerAuth: []}]
+      parameters:
+        - in: path
+          name: document_id
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties: {status: {type: string, enum: [verified, rejected]}}
+      responses:
+        "200": {description: Document reviewed, content: {application/json: {schema: {$ref: "#/components/schemas/KYCDocument"}}}}
+        "409": {description: Document is not pending}
   /v1/customers/{customer_id}/approve:
     post:
       operationId: approveCustomer
@@ -570,6 +629,52 @@ components:
       properties:
         items: {type: array, items: {$ref: "#/components/schemas/InvestigationCase"}}
         next_page_token: {type: string}
+    CDDProfile:
+      type: object
+      required: [source_of_wealth, business_purpose, expected_monthly_volume_minor, currency, status]
+      properties:
+        customer_id: {type: string, format: uuid, readOnly: true}
+        source_of_wealth: {type: string}
+        business_purpose: {type: string}
+        expected_monthly_volume_minor: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, minLength: 3, maxLength: 3}
+        status: {type: string, enum: [incomplete, in_review, complete]}
+        next_review_at: {type: string, format: date-time}
+        updated_by: {type: string, readOnly: true}
+        updated_at: {type: string, format: date-time, readOnly: true}
+    BeneficialOwner:
+      type: object
+      required: [full_name, ownership_percent, country_code]
+      properties:
+        id: {type: string, format: uuid, readOnly: true}
+        customer_id: {type: string, format: uuid, readOnly: true}
+        full_name: {type: string}
+        ownership_percent: {type: integer, minimum: 1, maximum: 100}
+        country_code: {type: string, minLength: 2, maxLength: 2}
+        pep: {type: boolean}
+        created_by: {type: string, readOnly: true}
+        created_at: {type: string, format: date-time, readOnly: true}
+    KYCDocument:
+      type: object
+      required: [type, reference]
+      properties:
+        id: {type: string, format: uuid, readOnly: true}
+        customer_id: {type: string, format: uuid, readOnly: true}
+        type: {type: string}
+        reference: {type: string}
+        status: {type: string, enum: [pending, verified, rejected], readOnly: true}
+        expires_at: {type: string, format: date-time}
+        created_by: {type: string, readOnly: true}
+        created_at: {type: string, format: date-time, readOnly: true}
+        verified_by: {type: string, readOnly: true}
+        verified_at: {type: string, format: date-time, readOnly: true}
+    DueDiligenceDetails:
+      type: object
+      required: [profile, beneficial_owners, documents]
+      properties:
+        profile: {$ref: "#/components/schemas/CDDProfile"}
+        beneficial_owners: {type: array, items: {$ref: "#/components/schemas/BeneficialOwner"}}
+        documents: {type: array, items: {$ref: "#/components/schemas/KYCDocument"}}
     RiskFactors:
       type: object
       required: [country_risk, source_of_funds_verified]

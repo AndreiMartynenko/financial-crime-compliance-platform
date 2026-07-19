@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Customer 360 and audit explorer
+## Current milestone: KYC and customer due diligence
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -50,7 +50,11 @@ Implemented:
 - a role-aware investigation workspace in the React operations portal;
 - a unified customer activity stream spanning customer, transaction, alert and case events;
 - Customer 360 views with explainable risk reasons, linked work and transaction history;
-- a filterable audit explorer for reconstructing the complete customer lifecycle.
+- a filterable audit explorer for reconstructing the complete customer lifecycle;
+- structured CDD profiles with source of wealth, business purpose and expected activity;
+- beneficial-owner capture including ownership percentage, country and PEP indicator;
+- KYC document evidence with independent reviewer verification or rejection;
+- periodic review scheduling and a dedicated role-aware KYC/CDD workspace.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 

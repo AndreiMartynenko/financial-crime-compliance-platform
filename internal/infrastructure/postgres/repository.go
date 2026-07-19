@@ -733,6 +733,141 @@ func (r *Repository) caseMutationError(ctx context.Context, tx pgx.Tx, id string
 	return domain.ErrCaseConflict
 }
 
+func (r *Repository) GetDueDiligence(ctx context.Context, customerID string) (domain.DueDiligenceDetails, error) {
+	var exists bool
+	if err := r.pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM customers WHERE id=$1)", customerID).Scan(&exists); err != nil {
+		return domain.DueDiligenceDetails{}, err
+	}
+	if !exists {
+		return domain.DueDiligenceDetails{}, domain.ErrCustomerNotFound
+	}
+	result := domain.DueDiligenceDetails{Profile: domain.CDDProfile{CustomerID: customerID, Status: domain.CDDIncomplete}, BeneficialOwners: []domain.BeneficialOwner{}, Documents: []domain.KYCDocument{}}
+	err := r.pool.QueryRow(ctx, `SELECT source_of_wealth,business_purpose,expected_monthly_volume_minor,currency,status,next_review_at,updated_by,updated_at FROM customer_due_diligence WHERE customer_id=$1`, customerID).Scan(&result.Profile.SourceOfWealth, &result.Profile.BusinessPurpose, &result.Profile.ExpectedMonthlyVolumeMinor, &result.Profile.Currency, &result.Profile.Status, &result.Profile.NextReviewAt, &result.Profile.UpdatedBy, &result.Profile.UpdatedAt)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return result, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT id,customer_id,full_name,ownership_percent,country_code,pep,created_by,created_at FROM beneficial_owners WHERE customer_id=$1 ORDER BY created_at,id`, customerID)
+	if err != nil {
+		return result, err
+	}
+	for rows.Next() {
+		var o domain.BeneficialOwner
+		if err := rows.Scan(&o.ID, &o.CustomerID, &o.FullName, &o.OwnershipPercent, &o.CountryCode, &o.PEP, &o.CreatedBy, &o.CreatedAt); err != nil {
+			rows.Close()
+			return result, err
+		}
+		result.BeneficialOwners = append(result.BeneficialOwners, o)
+	}
+	rows.Close()
+	rows, err = r.pool.Query(ctx, `SELECT id,customer_id,document_type,reference,status,expires_at,created_by,created_at,verified_by,verified_at FROM kyc_documents WHERE customer_id=$1 ORDER BY created_at,id`, customerID)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		d, err := scanKYCDocument(rows)
+		if err != nil {
+			return result, err
+		}
+		result.Documents = append(result.Documents, d)
+	}
+	return result, rows.Err()
+}
+func scanKYCDocument(row scanner) (domain.KYCDocument, error) {
+	var d domain.KYCDocument
+	var verifiedBy *string
+	err := row.Scan(&d.ID, &d.CustomerID, &d.Type, &d.Reference, &d.Status, &d.ExpiresAt, &d.CreatedBy, &d.CreatedAt, &verifiedBy, &d.VerifiedAt)
+	if verifiedBy != nil {
+		d.VerifiedBy = *verifiedBy
+	}
+	return d, err
+}
+func (r *Repository) UpsertCDDProfile(ctx context.Context, p domain.CDDProfile, event domain.AuditEvent) (stored domain.CDDProfile, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return stored, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	err = tx.QueryRow(ctx, `INSERT INTO customer_due_diligence(customer_id,source_of_wealth,business_purpose,expected_monthly_volume_minor,currency,status,next_review_at,updated_by,updated_at) SELECT id,$2,$3,$4,$5,$6,$7,$8,$9 FROM customers WHERE id=$1 ON CONFLICT(customer_id) DO UPDATE SET source_of_wealth=excluded.source_of_wealth,business_purpose=excluded.business_purpose,expected_monthly_volume_minor=excluded.expected_monthly_volume_minor,currency=excluded.currency,status=excluded.status,next_review_at=excluded.next_review_at,updated_by=excluded.updated_by,updated_at=excluded.updated_at RETURNING customer_id,source_of_wealth,business_purpose,expected_monthly_volume_minor,currency,status,next_review_at,updated_by,updated_at`, p.CustomerID, p.SourceOfWealth, p.BusinessPurpose, p.ExpectedMonthlyVolumeMinor, p.Currency, p.Status, p.NextReviewAt, p.UpdatedBy, p.UpdatedAt).Scan(&stored.CustomerID, &stored.SourceOfWealth, &stored.BusinessPurpose, &stored.ExpectedMonthlyVolumeMinor, &stored.Currency, &stored.Status, &stored.NextReviewAt, &stored.UpdatedBy, &stored.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return stored, domain.ErrCustomerNotFound
+	}
+	if err != nil {
+		return stored, err
+	}
+	if err = insertAuditEvent(ctx, tx, event); err != nil {
+		return stored, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return stored, err
+	}
+	return stored, nil
+}
+func (r *Repository) AddBeneficialOwner(ctx context.Context, o domain.BeneficialOwner, event domain.AuditEvent) (stored domain.BeneficialOwner, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return stored, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	err = tx.QueryRow(ctx, `INSERT INTO beneficial_owners(id,customer_id,full_name,ownership_percent,country_code,pep,created_by,created_at) SELECT $1,id,$3,$4,$5,$6,$7,$8 FROM customers WHERE id=$2 RETURNING id,customer_id,full_name,ownership_percent,country_code,pep,created_by,created_at`, o.ID, o.CustomerID, o.FullName, o.OwnershipPercent, o.CountryCode, o.PEP, o.CreatedBy, o.CreatedAt).Scan(&stored.ID, &stored.CustomerID, &stored.FullName, &stored.OwnershipPercent, &stored.CountryCode, &stored.PEP, &stored.CreatedBy, &stored.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return stored, domain.ErrCustomerNotFound
+	}
+	if err != nil {
+		return stored, err
+	}
+	if err = insertAuditEvent(ctx, tx, event); err != nil {
+		return stored, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return stored, err
+	}
+	return stored, nil
+}
+func (r *Repository) AddKYCDocument(ctx context.Context, d domain.KYCDocument, event domain.AuditEvent) (stored domain.KYCDocument, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return stored, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err = scanKYCDocument(tx.QueryRow(ctx, `INSERT INTO kyc_documents(id,customer_id,document_type,reference,status,expires_at,created_by,created_at) SELECT $1,id,$3,$4,$5,$6,$7,$8 FROM customers WHERE id=$2 RETURNING id,customer_id,document_type,reference,status,expires_at,created_by,created_at,verified_by,verified_at`, d.ID, d.CustomerID, d.Type, d.Reference, d.Status, d.ExpiresAt, d.CreatedBy, d.CreatedAt))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return stored, domain.ErrCustomerNotFound
+	}
+	if err != nil {
+		return stored, err
+	}
+	if err = insertAuditEvent(ctx, tx, event); err != nil {
+		return stored, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return stored, err
+	}
+	return stored, nil
+}
+func (r *Repository) ReviewKYCDocument(ctx context.Context, id string, status domain.DocumentStatus, actor string, event domain.AuditEvent) (stored domain.KYCDocument, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return stored, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err = scanKYCDocument(tx.QueryRow(ctx, `UPDATE kyc_documents SET status=$2,verified_by=$3,verified_at=$4 WHERE id=$1 AND status='pending' RETURNING id,customer_id,document_type,reference,status,expires_at,created_by,created_at,verified_by,verified_at`, id, status, actor, event.OccurredAt))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return stored, domain.ErrReviewConflict
+	}
+	if err != nil {
+		return stored, err
+	}
+	event.AggregateID = stored.CustomerID
+	if err = insertAuditEvent(ctx, tx, event); err != nil {
+		return stored, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return stored, err
+	}
+	return stored, nil
+}
+
 func nullableCursorID(id string) any {
 	if id == "" {
 		return nil

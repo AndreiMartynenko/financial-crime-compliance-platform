@@ -314,6 +314,43 @@ func TestCaseResolutionClosesAlertAtomically(t *testing.T) {
 	}
 }
 
+func TestDueDiligencePersistsAndAuditsDocumentReview(t *testing.T) {
+	ctx := context.Background()
+	pool := integrationPool(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	customer := testCustomer(now)
+	cleanupCustomer(t, pool, customer)
+	repo := NewRepository(pool)
+	if err := repo.CreateCustomer(ctx, customer, domain.AuditEvent{ID: "75ed2dde-c66c-4170-9822-a5010834aba9", AggregateType: "customer", AggregateID: customer.ID, EventType: "customer.onboarded", Actor: "maker", OccurredAt: now, Payload: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	profile := domain.CDDProfile{CustomerID: customer.ID, SourceOfWealth: "Business income", BusinessPurpose: "International trade", ExpectedMonthlyVolumeMinor: 10000000, Currency: "GBP", Status: domain.CDDInReview, UpdatedBy: "analyst", UpdatedAt: now}
+	if _, err := repo.UpsertCDDProfile(ctx, profile, domain.AuditEvent{ID: "c0962846-8ef1-4183-999a-57d9e25c97de", AggregateType: "customer", AggregateID: customer.ID, EventType: "cdd.profile_updated", Actor: "analyst", OccurredAt: now, Payload: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	owner := domain.BeneficialOwner{ID: "45360514-140c-444c-b426-e4aa26149555", CustomerID: customer.ID, FullName: "Ada Owner", OwnershipPercent: 75, CountryCode: "GB", CreatedBy: "analyst", CreatedAt: now}
+	if _, err := repo.AddBeneficialOwner(ctx, owner, domain.AuditEvent{ID: "66c2141f-47e6-408d-aa53-50aaf75accf4", AggregateType: "customer", AggregateID: customer.ID, EventType: "cdd.beneficial_owner_added", Actor: "analyst", OccurredAt: now, Payload: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	document := domain.KYCDocument{ID: "6bd3cd49-f852-4893-a355-32dc5826ff65", CustomerID: customer.ID, Type: "certificate_of_incorporation", Reference: "DOC-001", Status: domain.DocumentPending, CreatedBy: "analyst", CreatedAt: now}
+	if _, err := repo.AddKYCDocument(ctx, document, domain.AuditEvent{ID: "144740d0-7425-48c5-8df8-e09014a31c28", AggregateType: "customer", AggregateID: customer.ID, EventType: "cdd.document_added", Actor: "analyst", OccurredAt: now, Payload: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	reviewEvent := domain.AuditEvent{ID: "2c5ffc82-b7ca-45aa-9514-23b98ae37884", AggregateType: "customer", EventType: "cdd.document_verified", Actor: "reviewer", OccurredAt: now.Add(time.Second), Payload: map[string]any{}}
+	verified, err := repo.ReviewKYCDocument(ctx, document.ID, domain.DocumentVerified, "reviewer", reviewEvent)
+	if err != nil || verified.Status != domain.DocumentVerified {
+		t.Fatalf("verified=%+v err=%v", verified, err)
+	}
+	details, err := repo.GetDueDiligence(ctx, customer.ID)
+	if err != nil || len(details.BeneficialOwners) != 1 || len(details.Documents) != 1 || details.Profile.Status != domain.CDDInReview {
+		t.Fatalf("details=%+v err=%v", details, err)
+	}
+	events, err := repo.ListAuditEvents(ctx, customer.ID)
+	if err != nil || len(events) != 5 {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
 func containsAlert(alerts []domain.Alert, id string, status domain.AlertStatus) bool {
 	for _, alert := range alerts {
 		if alert.ID == id && alert.Status == status {
@@ -341,8 +378,8 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 6 {
-		t.Fatalf("applied migrations=%d, want 6", migrationCount)
+	if migrationCount != 7 {
+		t.Fatalf("applied migrations=%d, want 7", migrationCount)
 	}
 	return pool
 }

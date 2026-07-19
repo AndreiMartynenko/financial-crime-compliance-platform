@@ -16,20 +16,21 @@ import (
 )
 
 type Handler struct {
-	service            *application.OnboardingService
-	transactionService *application.TransactionService
-	queryService       *application.QueryService
-	caseService        *application.CaseService
-	logger             *slog.Logger
-	readiness          HealthChecker
+	service             *application.OnboardingService
+	transactionService  *application.TransactionService
+	queryService        *application.QueryService
+	caseService         *application.CaseService
+	dueDiligenceService *application.DueDiligenceService
+	logger              *slog.Logger
+	readiness           HealthChecker
 }
 
 type HealthChecker interface {
 	Ping(context.Context) error
 }
 
-func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, queryService *application.QueryService, caseService *application.CaseService, logger *slog.Logger, authenticator *auth.Authenticator, health HealthChecker) http.Handler {
-	h := &Handler{service: service, transactionService: transactionService, queryService: queryService, caseService: caseService, logger: logger, readiness: health}
+func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, queryService *application.QueryService, caseService *application.CaseService, dueDiligenceService *application.DueDiligenceService, logger *slog.Logger, authenticator *auth.Authenticator, health HealthChecker) http.Handler {
+	h := &Handler{service: service, transactionService: transactionService, queryService: queryService, caseService: caseService, dueDiligenceService: dueDiligenceService, logger: logger, readiness: health}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.health)
 	mux.HandleFunc("GET /readyz", h.ready)
@@ -50,7 +51,111 @@ func NewHandler(service *application.OnboardingService, transactionService *appl
 	mux.Handle("POST /v1/cases/{case_id}/assign", authenticate(authenticator, requireRoles(h.assignCase, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/cases/{case_id}/comments", authenticate(authenticator, requireRoles(h.commentCase, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/cases/{case_id}/resolve", authenticate(authenticator, requireRoles(h.resolveCase, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("GET /v1/customers/{customer_id}/due-diligence", authenticate(authenticator, requireRoles(h.getDueDiligence, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("PUT /v1/customers/{customer_id}/due-diligence", authenticate(authenticator, requireRoles(h.updateDueDiligence, auth.RoleAnalyst, auth.RoleAdmin)))
+	mux.Handle("POST /v1/customers/{customer_id}/beneficial-owners", authenticate(authenticator, requireRoles(h.addBeneficialOwner, auth.RoleAnalyst, auth.RoleAdmin)))
+	mux.Handle("POST /v1/customers/{customer_id}/kyc-documents", authenticate(authenticator, requireRoles(h.addKYCDocument, auth.RoleAnalyst, auth.RoleAdmin)))
+	mux.Handle("POST /v1/kyc-documents/{document_id}/review", authenticate(authenticator, requireRoles(h.reviewKYCDocument, auth.RoleReviewer, auth.RoleAdmin)))
 	return requestLogging(logger, mux)
+}
+
+type documentReviewRequest struct {
+	Status domain.DocumentStatus `json:"status"`
+}
+
+func (h *Handler) getDueDiligence(w http.ResponseWriter, r *http.Request) {
+	result, err := h.dueDiligenceService.Get(r.Context(), r.PathValue("customer_id"))
+	h.writeCDDResult(w, result, err, 200)
+}
+func (h *Handler) updateDueDiligence(w http.ResponseWriter, r *http.Request) {
+	var request domain.CDDProfile
+	if decodeJSON(w, r, &request) != nil {
+		writeError(w, 400, "invalid_json", "Request body is not valid")
+		return
+	}
+	request.CustomerID = r.PathValue("customer_id")
+	result, err := h.dueDiligenceService.UpdateProfile(r.Context(), request, principalSubject(r))
+	if errors.Is(err, application.ErrInvalidDueDiligence) {
+		writeError(w, 422, "invalid_due_diligence", "CDD profile failed validation")
+		return
+	}
+	if errors.Is(err, domain.ErrCustomerNotFound) {
+		writeError(w, 404, "customer_not_found", "Customer was not found")
+		return
+	}
+	if err != nil {
+		h.readError(w, "update due diligence", err)
+		return
+	}
+	writeJSON(w, 200, result)
+}
+func (h *Handler) addBeneficialOwner(w http.ResponseWriter, r *http.Request) {
+	var request domain.BeneficialOwner
+	if decodeJSON(w, r, &request) != nil {
+		writeError(w, 400, "invalid_json", "Request body is not valid")
+		return
+	}
+	request.CustomerID = r.PathValue("customer_id")
+	result, err := h.dueDiligenceService.AddOwner(r.Context(), request, principalSubject(r))
+	if errors.Is(err, application.ErrInvalidDueDiligence) {
+		writeError(w, 422, "invalid_beneficial_owner", "Beneficial owner failed validation")
+		return
+	}
+	if err != nil {
+		h.readError(w, "add beneficial owner", err)
+		return
+	}
+	writeJSON(w, 201, result)
+}
+func (h *Handler) addKYCDocument(w http.ResponseWriter, r *http.Request) {
+	var request domain.KYCDocument
+	if decodeJSON(w, r, &request) != nil {
+		writeError(w, 400, "invalid_json", "Request body is not valid")
+		return
+	}
+	request.CustomerID = r.PathValue("customer_id")
+	result, err := h.dueDiligenceService.AddDocument(r.Context(), request, principalSubject(r))
+	if errors.Is(err, application.ErrInvalidDueDiligence) {
+		writeError(w, 422, "invalid_document", "KYC document failed validation")
+		return
+	}
+	if err != nil {
+		h.readError(w, "add KYC document", err)
+		return
+	}
+	writeJSON(w, 201, result)
+}
+func (h *Handler) reviewKYCDocument(w http.ResponseWriter, r *http.Request) {
+	var request documentReviewRequest
+	if decodeJSON(w, r, &request) != nil {
+		writeError(w, 400, "invalid_json", "Request body is not valid")
+		return
+	}
+	result, err := h.dueDiligenceService.ReviewDocument(r.Context(), r.PathValue("document_id"), request.Status, principalSubject(r))
+	if errors.Is(err, application.ErrInvalidDueDiligence) {
+		writeError(w, 422, "invalid_review", "Document review failed validation")
+		return
+	}
+	if errors.Is(err, domain.ErrReviewConflict) {
+		writeError(w, 409, "review_conflict", "Document is not pending review")
+		return
+	}
+	if err != nil {
+		h.readError(w, "review KYC document", err)
+		return
+	}
+	writeJSON(w, 200, result)
+}
+func (h *Handler) writeCDDResult(w http.ResponseWriter, result domain.DueDiligenceDetails, err error, status int) {
+	if errors.Is(err, domain.ErrCustomerNotFound) {
+		writeError(w, 404, "customer_not_found", "Customer was not found")
+		return
+	}
+	if err != nil {
+		h.readError(w, "get due diligence", err)
+		return
+	}
+	writeJSON(w, status, result)
 }
 
 type caseRequest struct {
