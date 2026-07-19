@@ -11,6 +11,24 @@ This runbook covers the PostgreSQL system of record. Identity-provider, Kubernet
 
 These are engineering targets, not guarantees. They become service commitments only after repeated timed drills on the selected cloud provider.
 
+## Staging resilience drill
+
+The manual **Staging resilience drill** GitHub workflow requires approval through the `staging-resilience` environment. It verifies that at least two API replicas are healthy, deletes exactly one non-production API pod, continuously samples `/readyz`, measures full replica recovery, and retains a machine-readable evidence artifact for 365 days. It refuses namespaces containing `prod` or `production`.
+
+Configure the environment with `KUBE_CONFIG`, `STAGING_DATABASE_URL`, and the `STAGING_BASE_URL` variable. The database credential needs `CREATEDB` only when the optional disposable restore drill is selected. Start with the default 120-second recovery threshold; tighten it only after measured staging history supports the change.
+
+The same pod-recovery check can be run by an operator:
+
+```bash
+BASE_URL='https://staging.example.com' \
+KUBE_NAMESPACE=fccp-staging \
+CONFIRM_RESILIENCE_DRILL=run \
+EVIDENCE_FILE=resilience-evidence.json \
+./scripts/staging-resilience-drill.sh
+```
+
+This is deliberately a single-pod availability exercise, not proof of database, availability-zone, region, identity-provider, or third-party-provider failover. Those failure modes require provider-specific staging exercises after cloud selection.
+
 ## Backup policy
 
 Run `scripts/postgres-backup.sh` from an isolated job with a read-only backup credential. Upload both the `.dump` and `.sha256` files to encrypted, versioned object storage using immutable retention. Do not store dumps in Git or container filesystems.
@@ -48,6 +66,8 @@ docker compose --profile ops run --rm db-tools \
 ```
 
 Never run a drill against the production server when isolation policy forbids temporary databases. Restore into a dedicated recovery instance instead.
+
+Each drill record should include the commit SHA, operator/approver, timestamps, recovery duration, availability failures, restored backup identity, validation result, and links to incident or follow-up work. GitHub workflow artifacts provide the raw JSON evidence; export them to the approved long-term audit store before artifact expiry.
 
 ## Incident recovery
 

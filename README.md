@@ -115,6 +115,8 @@ Implemented:
 - system-context, transaction-boundary, deployment, and trust-boundary architecture documentation;
 - a repeatable five-minute product walkthrough and release checklist;
 - tag-triggered release automation with immutable GHCR images, an SPDX SBOM, SHA-256 checksums, provenance attestation, and a GitHub Release bundle.
+- an approval-gated staging resilience workflow that measures single-pod recovery and retains JSON evidence;
+- an optional timed PostgreSQL backup/restore drill in the same controlled workflow.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -323,7 +325,7 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Timed staging resilience, failover, and recovery exercises with retained evidence.
+1. Provider-specific availability-zone, database, identity-provider, and external-provider failover exercises.
 2. A real cloud deployment after provider, account, region, domain, and data-residency selection.
 3. Jurisdiction-specific compliance policy, privacy/retention, licensed data, independent security review, and operating-model approval.
 

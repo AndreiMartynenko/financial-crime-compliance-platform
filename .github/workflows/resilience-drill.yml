@@ -1,0 +1,85 @@
+name: Staging resilience drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      recovery_timeout_seconds:
+        description: Maximum allowed API replica recovery time
+        required: true
+        default: "120"
+      verify_database_restore:
+        description: Also run a disposable PostgreSQL backup/restore drill
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fccp-staging-resilience
+  cancel-in-progress: false
+
+jobs:
+  drill:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging-resilience
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure cluster
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/kube"
+          printf '%s' "$KUBE_CONFIG" | base64 --decode >"$RUNNER_TEMP/kube/config"
+          chmod 600 "$RUNNER_TEMP/kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/kube/config" >>"$GITHUB_ENV"
+      - name: Verify target context
+        run: |
+          kubectl config current-context
+          kubectl -n fccp-staging get deployment api
+      - name: Run API replica recovery drill
+        env:
+          BASE_URL: ${{ vars.STAGING_BASE_URL }}
+          KUBE_NAMESPACE: fccp-staging
+          API_DEPLOYMENT: api
+          POD_SELECTOR: app=fccp-api
+          RECOVERY_TIMEOUT_SECONDS: ${{ inputs.recovery_timeout_seconds }}
+          CONFIRM_RESILIENCE_DRILL: run
+          EVIDENCE_FILE: evidence/api-resilience.json
+        run: |
+          mkdir -p evidence
+          ./scripts/staging-resilience-drill.sh
+      - name: Run disposable database restore drill
+        if: inputs.verify_database_restore
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          BACKUP_DIR: ${{ runner.temp }}/fccp-backups
+        run: |
+          mkdir -p "$BACKUP_DIR"
+          started=$(date +%s)
+          docker run --rm \
+            -e DATABASE_URL \
+            -e BACKUP_DIR=/backups \
+            -v "$PWD/scripts:/scripts:ro" \
+            -v "$BACKUP_DIR:/backups" \
+            postgres:17-alpine sh -eu -c '
+              backup_path=$(/scripts/postgres-backup.sh)
+              /scripts/postgres-verify-backup.sh "$backup_path"
+              basename "$backup_path" >/backups/verified-backup.txt
+            '
+          completed=$(date +%s)
+          jq -n \
+            --arg backup_file "$(cat "$BACKUP_DIR/verified-backup.txt")" \
+            --argjson duration_seconds "$((completed - started))" \
+            '{schema_version:1, type:"disposable_postgresql_restore", backup_file:$backup_file,
+              duration_seconds:$duration_seconds, passed:true}' >evidence/database-restore.json
+      - name: Publish drill evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-resilience-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 365
