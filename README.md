@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Versioned transaction monitoring and alerts
+## Current milestone: Interactive customer and transaction operations
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -40,7 +40,10 @@ Implemented:
 - GitHub Actions verification with PostgreSQL integration tests, race detection, vet and container build;
 - concurrency-safe idempotent transaction ingestion with replay and payload-conflict detection;
 - cursor-paginated read APIs for customers, transactions, alerts and audit trails;
-- responsive React operations portal delivered through a same-origin Nginx reverse proxy.
+- responsive React operations portal delivered through a same-origin Nginx reverse proxy;
+- role-aware customer onboarding with explicit compliance risk-factor capture;
+- active-customer transaction entry with precise major-to-minor unit conversion;
+- immediate transaction-monitoring result feedback and refreshed alert queues.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -52,6 +55,8 @@ docker compose up --build
 ```
 
 Open the analyst website at [http://localhost:3000](http://localhost:3000). The API remains available at `http://localhost:8080`; browser requests use `/api` through the website reverse proxy.
+
+Analysts and administrators can register customers from **Customers → New customer**. After an independent reviewer activates a customer, analysts and administrators can ingest and monitor payments from **Customers → Add transaction**. Reviewer-only controls are hidden from unauthorized roles, while the API remains the authoritative authorization boundary.
 
 The API applies the embedded SQL migration when it starts. For running the API outside Compose:
 
