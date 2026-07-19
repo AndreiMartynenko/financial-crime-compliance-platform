@@ -18,6 +18,8 @@ type Repository struct {
 	alerts       map[string]domain.Alert
 	idempotency  map[string]string
 	events       map[string][]domain.AuditEvent
+	cases        map[string]domain.InvestigationCase
+	caseComments map[string][]domain.CaseComment
 }
 
 func (r *Repository) GetCustomer(_ context.Context, id string) (domain.Customer, error) {
@@ -82,6 +84,19 @@ func (r *Repository) ListAlertsPage(_ context.Context, status domain.AlertStatus
 	return limit(items, page.Limit), nil
 }
 
+func (r *Repository) ListCasesPage(_ context.Context, status domain.CaseStatus, page application.PageRequest) ([]domain.InvestigationCase, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	items := make([]domain.InvestigationCase, 0)
+	for _, v := range r.cases {
+		if (status == "" || v.Status == status) && before(v.UpdatedAt, v.ID, page) {
+			items = append(items, v)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return newer(items[i].UpdatedAt, items[i].ID, items[j].UpdatedAt, items[j].ID) })
+	return limit(items, page.Limit), nil
+}
+
 func before(timestamp time.Time, id string, page application.PageRequest) bool {
 	return page.CursorTime.IsZero() || timestamp.Before(page.CursorTime) || (timestamp.Equal(page.CursorTime) && id < page.CursorID)
 }
@@ -96,7 +111,105 @@ func limit[T any](items []T, size int) []T {
 }
 
 func NewRepository() *Repository {
-	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), idempotency: make(map[string]string), events: make(map[string][]domain.AuditEvent)}
+	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), idempotency: make(map[string]string), events: make(map[string][]domain.AuditEvent), cases: make(map[string]domain.InvestigationCase), caseComments: make(map[string][]domain.CaseComment)}
+}
+
+func (r *Repository) CreateCase(_ context.Context, item domain.InvestigationCase, event domain.AuditEvent) (domain.InvestigationCase, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	alert, ok := r.alerts[item.AlertID]
+	if !ok {
+		return item, domain.ErrAlertNotFound
+	}
+	if alert.Status != domain.AlertOpen {
+		return item, domain.ErrAlertConflict
+	}
+	for _, existing := range r.cases {
+		if existing.AlertID == item.AlertID {
+			return item, domain.ErrAlertHasCase
+		}
+	}
+	item.CustomerID = alert.CustomerID
+	r.cases[item.ID] = item
+	r.events[item.ID] = append(r.events[item.ID], event)
+	return item, nil
+}
+func (r *Repository) GetCase(_ context.Context, id string) (domain.InvestigationCase, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	item, ok := r.cases[id]
+	if !ok {
+		return item, domain.ErrCaseNotFound
+	}
+	return item, nil
+}
+func (r *Repository) ListCaseComments(_ context.Context, id string) ([]domain.CaseComment, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]domain.CaseComment(nil), r.caseComments[id]...), nil
+}
+func (r *Repository) AssignCase(_ context.Context, id, assignee string, event domain.AuditEvent) (domain.InvestigationCase, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, ok := r.cases[id]
+	if !ok {
+		return item, domain.ErrCaseNotFound
+	}
+	if item.Status == domain.CaseResolved {
+		return item, domain.ErrCaseConflict
+	}
+	item.AssignedTo = assignee
+	item.Status = domain.CaseInProgress
+	item.UpdatedAt = event.OccurredAt
+	r.cases[id] = item
+	r.events[id] = append(r.events[id], event)
+	return item, nil
+}
+func (r *Repository) AddCaseComment(_ context.Context, comment domain.CaseComment, event domain.AuditEvent) (domain.CaseComment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, ok := r.cases[comment.CaseID]
+	if !ok {
+		return comment, domain.ErrCaseNotFound
+	}
+	if item.Status == domain.CaseResolved {
+		return comment, domain.ErrCaseConflict
+	}
+	item.UpdatedAt = comment.CreatedAt
+	r.cases[item.ID] = item
+	r.caseComments[item.ID] = append(r.caseComments[item.ID], comment)
+	r.events[item.ID] = append(r.events[item.ID], event)
+	return comment, nil
+}
+func (r *Repository) ResolveCase(_ context.Context, id, resolution, actor string, caseEvent, alertEvent domain.AuditEvent) (domain.InvestigationCase, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, ok := r.cases[id]
+	if !ok {
+		return item, domain.ErrCaseNotFound
+	}
+	if item.Status == domain.CaseResolved {
+		return item, domain.ErrCaseConflict
+	}
+	alert := r.alerts[item.AlertID]
+	if alert.Status != domain.AlertOpen {
+		return item, domain.ErrAlertConflict
+	}
+	item.Status = domain.CaseResolved
+	item.Resolution = resolution
+	item.ResolvedBy = actor
+	item.ResolvedAt = &caseEvent.OccurredAt
+	item.UpdatedAt = caseEvent.OccurredAt
+	alert.Status = domain.AlertClosed
+	alert.ClosedAt = &caseEvent.OccurredAt
+	alert.ClosedBy = actor
+	alert.ClosureReason = resolution
+	alertEvent.AggregateID = alert.ID
+	r.cases[id] = item
+	r.alerts[alert.ID] = alert
+	r.events[id] = append(r.events[id], caseEvent)
+	r.events[alert.ID] = append(r.events[alert.ID], alertEvent)
+	return item, nil
 }
 
 func (r *Repository) CreateTransaction(_ context.Context, transaction domain.Transaction, event domain.AuditEvent, alerts []domain.Alert, alertEvents []domain.AuditEvent) (domain.Transaction, []domain.Alert, bool, error) {

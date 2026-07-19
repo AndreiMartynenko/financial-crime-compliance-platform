@@ -234,6 +234,86 @@ func TestCannotIngestTransactionForPendingCustomer(t *testing.T) {
 	}
 }
 
+func TestInvestigationCaseWorkflow(t *testing.T) {
+	repo := memory.NewRepository()
+	h := testHandler(t, repo)
+
+	createCustomer := httptest.NewRequest(http.MethodPost, "/v1/customers", bytes.NewReader([]byte(`{"type":"company","legal_name":"Case Customer Ltd","country_code":"GB","risk_factors":{"country_risk":"low","source_of_funds_verified":true}}`)))
+	createCustomer.Header.Set("Authorization", "Bearer "+signedToken("maker@example.test", auth.RoleAnalyst))
+	createCustomerResponse := httptest.NewRecorder()
+	h.ServeHTTP(createCustomerResponse, createCustomer)
+	var customer domain.Customer
+	if err := json.NewDecoder(createCustomerResponse.Body).Decode(&customer); err != nil {
+		t.Fatal(err)
+	}
+	approve := httptest.NewRequest(http.MethodPost, "/v1/customers/"+customer.ID+"/approve", nil)
+	approve.Header.Set("Authorization", "Bearer "+signedToken("reviewer@example.test", auth.RoleReviewer))
+	h.ServeHTTP(httptest.NewRecorder(), approve)
+
+	ingest := httptest.NewRequest(http.MethodPost, "/v1/transactions", bytes.NewReader([]byte(fmt.Sprintf(`{"customer_id":%q,"direction":"outbound","amount_minor":2000000,"currency":"GBP","counterparty_country":"GB","occurred_at":"2026-07-19T12:00:00Z"}`, customer.ID))))
+	ingest.Header.Set("Authorization", "Bearer "+signedToken("analyst@example.test", auth.RoleAnalyst))
+	ingest.Header.Set("Idempotency-Key", "case-workflow-transaction")
+	ingestResponse := httptest.NewRecorder()
+	h.ServeHTTP(ingestResponse, ingest)
+	var ingestion application.IngestTransactionResult
+	if err := json.NewDecoder(ingestResponse.Body).Decode(&ingestion); err != nil || len(ingestion.Alerts) != 1 {
+		t.Fatalf("ingestion=%+v err=%v", ingestion, err)
+	}
+
+	createCase := httptest.NewRequest(http.MethodPost, "/v1/cases", bytes.NewReader([]byte(fmt.Sprintf(`{"alert_id":%q,"title":"Review large outbound payment","priority":"high"}`, ingestion.Alerts[0].ID))))
+	createCase.Header.Set("Authorization", "Bearer "+signedToken("analyst@example.test", auth.RoleAnalyst))
+	createCaseResponse := httptest.NewRecorder()
+	h.ServeHTTP(createCaseResponse, createCase)
+	if createCaseResponse.Code != http.StatusCreated {
+		t.Fatalf("create case status=%d body=%s", createCaseResponse.Code, createCaseResponse.Body.String())
+	}
+	var investigation domain.InvestigationCase
+	if err := json.NewDecoder(createCaseResponse.Body).Decode(&investigation); err != nil {
+		t.Fatal(err)
+	}
+
+	assign := httptest.NewRequest(http.MethodPost, "/v1/cases/"+investigation.ID+"/assign", bytes.NewReader([]byte(`{"assignee":"investigator@example.test"}`)))
+	assign.Header.Set("Authorization", "Bearer "+signedToken("reviewer@example.test", auth.RoleReviewer))
+	assignResponse := httptest.NewRecorder()
+	h.ServeHTTP(assignResponse, assign)
+	if assignResponse.Code != http.StatusOK {
+		t.Fatalf("assign status=%d body=%s", assignResponse.Code, assignResponse.Body.String())
+	}
+
+	comment := httptest.NewRequest(http.MethodPost, "/v1/cases/"+investigation.ID+"/comments", bytes.NewReader([]byte(`{"body":"Customer evidence requested and reviewed."}`)))
+	comment.Header.Set("Authorization", "Bearer "+signedToken("investigator@example.test", auth.RoleAnalyst))
+	commentResponse := httptest.NewRecorder()
+	h.ServeHTTP(commentResponse, comment)
+	if commentResponse.Code != http.StatusCreated {
+		t.Fatalf("comment status=%d body=%s", commentResponse.Code, commentResponse.Body.String())
+	}
+
+	resolve := httptest.NewRequest(http.MethodPost, "/v1/cases/"+investigation.ID+"/resolve", bytes.NewReader([]byte(`{"resolution":"Legitimate payment supported by invoice."}`)))
+	resolve.Header.Set("Authorization", "Bearer "+signedToken("reviewer@example.test", auth.RoleReviewer))
+	resolveResponse := httptest.NewRecorder()
+	h.ServeHTTP(resolveResponse, resolve)
+	if resolveResponse.Code != http.StatusOK {
+		t.Fatalf("resolve status=%d body=%s", resolveResponse.Code, resolveResponse.Body.String())
+	}
+	var resolved domain.InvestigationCase
+	if err := json.NewDecoder(resolveResponse.Body).Decode(&resolved); err != nil || resolved.Status != domain.CaseResolved {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+
+	details := httptest.NewRequest(http.MethodGet, "/v1/cases/"+investigation.ID, nil)
+	details.Header.Set("Authorization", "Bearer "+signedToken("analyst@example.test", auth.RoleAnalyst))
+	detailsResponse := httptest.NewRecorder()
+	h.ServeHTTP(detailsResponse, details)
+	var caseDetails domain.CaseDetails
+	if err := json.NewDecoder(detailsResponse.Body).Decode(&caseDetails); err != nil || len(caseDetails.Comments) != 1 || len(caseDetails.Timeline) != 4 {
+		t.Fatalf("details=%+v err=%v", caseDetails, err)
+	}
+	alerts, _ := repo.ListAlerts(context.Background(), domain.AlertOpen)
+	if len(alerts) != 0 {
+		t.Fatalf("expected linked alert to be closed, open=%+v", alerts)
+	}
+}
+
 func TestListCustomersUsesCursorPagination(t *testing.T) {
 	t.Parallel()
 	repo := memory.NewRepository()
@@ -286,6 +366,7 @@ func TestReadinessFailsWhenDatabaseIsUnavailable(t *testing.T) {
 	}
 	h := NewHandler(
 		application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo),
+		application.NewCaseService(repo),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator,
 		healthCheckerFunc(func(context.Context) error { return errors.New("database unavailable") }),
 	)
@@ -317,7 +398,7 @@ func testHandler(t *testing.T, repo *memory.Repository) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator, healthCheckerFunc(func(context.Context) error { return nil }))
+	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo), application.NewCaseService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator, healthCheckerFunc(func(context.Context) error { return nil }))
 }
 
 type healthCheckerFunc func(context.Context) error

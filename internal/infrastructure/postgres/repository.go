@@ -489,6 +489,215 @@ func (r *Repository) ListAlertsPage(ctx context.Context, status domain.AlertStat
 	return items, rows.Err()
 }
 
+const caseSelect = `id, alert_id, customer_id, title, priority, status, assigned_to, resolution,
+	created_by, created_at, updated_at, resolved_by, resolved_at`
+
+func scanCase(row scanner) (domain.InvestigationCase, error) {
+	var item domain.InvestigationCase
+	var assignedTo, resolution, resolvedBy *string
+	err := row.Scan(&item.ID, &item.AlertID, &item.CustomerID, &item.Title, &item.Priority, &item.Status,
+		&assignedTo, &resolution, &item.CreatedBy, &item.CreatedAt, &item.UpdatedAt, &resolvedBy, &item.ResolvedAt)
+	if assignedTo != nil {
+		item.AssignedTo = *assignedTo
+	}
+	if resolution != nil {
+		item.Resolution = *resolution
+	}
+	if resolvedBy != nil {
+		item.ResolvedBy = *resolvedBy
+	}
+	return item, err
+}
+
+func insertAuditEvent(ctx context.Context, tx pgx.Tx, event domain.AuditEvent) error {
+	payload, err := json.Marshal(event.Payload)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO audit_events (id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`, event.ID, event.AggregateType, event.AggregateID, event.EventType, event.Actor, event.OccurredAt, payload)
+	return err
+}
+
+func (r *Repository) CreateCase(ctx context.Context, item domain.InvestigationCase, event domain.AuditEvent) (stored domain.InvestigationCase, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return stored, fmt.Errorf("begin create case: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var status domain.AlertStatus
+	if err := tx.QueryRow(ctx, "SELECT status, customer_id FROM alerts WHERE id = $1 FOR UPDATE", item.AlertID).Scan(&status, &item.CustomerID); errors.Is(err, pgx.ErrNoRows) {
+		return stored, domain.ErrAlertNotFound
+	} else if err != nil {
+		return stored, fmt.Errorf("find case alert: %w", err)
+	}
+	if status != domain.AlertOpen {
+		return stored, domain.ErrAlertConflict
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM investigation_cases WHERE alert_id = $1)", item.AlertID).Scan(&exists); err != nil {
+		return stored, err
+	}
+	if exists {
+		return stored, domain.ErrAlertHasCase
+	}
+	stored, err = scanCase(tx.QueryRow(ctx, `INSERT INTO investigation_cases
+		(id, alert_id, customer_id, title, priority, status, created_by, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING `+caseSelect,
+		item.ID, item.AlertID, item.CustomerID, item.Title, item.Priority, item.Status, item.CreatedBy, item.CreatedAt, item.UpdatedAt))
+	if err != nil {
+		return stored, fmt.Errorf("insert case: %w", err)
+	}
+	if err := insertAuditEvent(ctx, tx, event); err != nil {
+		return stored, fmt.Errorf("audit case creation: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return stored, fmt.Errorf("commit create case: %w", err)
+	}
+	return stored, nil
+}
+
+func (r *Repository) GetCase(ctx context.Context, id string) (domain.InvestigationCase, error) {
+	item, err := scanCase(r.pool.QueryRow(ctx, "SELECT "+caseSelect+" FROM investigation_cases WHERE id=$1", id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return item, domain.ErrCaseNotFound
+	}
+	return item, err
+}
+
+func (r *Repository) ListCasesPage(ctx context.Context, status domain.CaseStatus, page application.PageRequest) ([]domain.InvestigationCase, error) {
+	rows, err := r.pool.Query(ctx, "SELECT "+caseSelect+` FROM investigation_cases
+		WHERE ($1='' OR status=$1) AND (NOT $2 OR (updated_at,id)<($3,$4::uuid))
+		ORDER BY updated_at DESC,id DESC LIMIT $5`, status, !page.CursorTime.IsZero(), page.CursorTime, nullableCursorID(page.CursorID), page.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list cases: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.InvestigationCase, 0)
+	for rows.Next() {
+		item, err := scanCase(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) ListCaseComments(ctx context.Context, caseID string) ([]domain.CaseComment, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id,case_id,author,body,created_at FROM case_comments WHERE case_id=$1 ORDER BY created_at,id`, caseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]domain.CaseComment, 0)
+	for rows.Next() {
+		var item domain.CaseComment
+		if err := rows.Scan(&item.ID, &item.CaseID, &item.Author, &item.Body, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) AssignCase(ctx context.Context, id, assignee string, event domain.AuditEvent) (stored domain.InvestigationCase, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return stored, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err = scanCase(tx.QueryRow(ctx, `UPDATE investigation_cases SET assigned_to=$2,status='in_progress',updated_at=$3
+		WHERE id=$1 AND status<>'resolved' RETURNING `+caseSelect, id, assignee, event.OccurredAt))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return stored, r.caseMutationError(ctx, tx, id)
+	}
+	if err != nil {
+		return stored, err
+	}
+	if err := insertAuditEvent(ctx, tx, event); err != nil {
+		return stored, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return stored, err
+	}
+	return stored, nil
+}
+
+func (r *Repository) AddCaseComment(ctx context.Context, comment domain.CaseComment, event domain.AuditEvent) (stored domain.CaseComment, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return stored, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var status domain.CaseStatus
+	if err := tx.QueryRow(ctx, "SELECT status FROM investigation_cases WHERE id=$1 FOR UPDATE", comment.CaseID).Scan(&status); errors.Is(err, pgx.ErrNoRows) {
+		return stored, domain.ErrCaseNotFound
+	} else if err != nil {
+		return stored, err
+	}
+	if status == domain.CaseResolved {
+		return stored, domain.ErrCaseConflict
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO case_comments(id,case_id,author,body,created_at) VALUES($1,$2,$3,$4,$5) RETURNING id,case_id,author,body,created_at`, comment.ID, comment.CaseID, comment.Author, comment.Body, comment.CreatedAt).Scan(&stored.ID, &stored.CaseID, &stored.Author, &stored.Body, &stored.CreatedAt)
+	if err != nil {
+		return stored, err
+	}
+	if _, err = tx.Exec(ctx, "UPDATE investigation_cases SET updated_at=$2 WHERE id=$1", comment.CaseID, comment.CreatedAt); err != nil {
+		return stored, err
+	}
+	if err = insertAuditEvent(ctx, tx, event); err != nil {
+		return stored, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return stored, err
+	}
+	return stored, nil
+}
+
+func (r *Repository) ResolveCase(ctx context.Context, id, resolution, actor string, caseEvent, alertEvent domain.AuditEvent) (stored domain.InvestigationCase, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return stored, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err = scanCase(tx.QueryRow(ctx, `UPDATE investigation_cases SET status='resolved',resolution=$2,resolved_by=$3,resolved_at=$4,updated_at=$4 WHERE id=$1 AND status<>'resolved' RETURNING `+caseSelect, id, resolution, actor, caseEvent.OccurredAt))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return stored, r.caseMutationError(ctx, tx, id)
+	}
+	if err != nil {
+		return stored, err
+	}
+	alertEvent.AggregateID = stored.AlertID
+	result, err := tx.Exec(ctx, `UPDATE alerts SET status='closed',closed_at=$2,closed_by=$3,closure_reason=$4 WHERE id=$1 AND status='open'`, stored.AlertID, caseEvent.OccurredAt, actor, resolution)
+	if err != nil {
+		return stored, err
+	}
+	if result.RowsAffected() != 1 {
+		return stored, domain.ErrAlertConflict
+	}
+	if err = insertAuditEvent(ctx, tx, caseEvent); err != nil {
+		return stored, err
+	}
+	if err = insertAuditEvent(ctx, tx, alertEvent); err != nil {
+		return stored, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return stored, err
+	}
+	return stored, nil
+}
+
+func (r *Repository) caseMutationError(ctx context.Context, tx pgx.Tx, id string) error {
+	var status domain.CaseStatus
+	if err := tx.QueryRow(ctx, "SELECT status FROM investigation_cases WHERE id=$1", id).Scan(&status); errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrCaseNotFound
+	} else if err != nil {
+		return err
+	}
+	return domain.ErrCaseConflict
+}
+
 func nullableCursorID(id string) any {
 	if id == "" {
 		return nil

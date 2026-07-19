@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.8.0
+  version: 0.9.0
   description: Portfolio API for authenticated customer-risk assessment, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
@@ -262,6 +262,113 @@ paths:
         "409": {description: Alert is already closed}
         "422": {description: Closure reason is missing}
         "500": {description: Alert closure could not be persisted; the transaction is rolled back}
+  /v1/cases:
+    get:
+      operationId: listCases
+      summary: List investigation cases
+      security: [{bearerAuth: []}]
+      parameters:
+        - in: query
+          name: status
+          schema: {type: string, enum: [open, in_progress, resolved]}
+        - {$ref: "#/components/parameters/PageSize"}
+        - {$ref: "#/components/parameters/PageToken"}
+      responses:
+        "200":
+          description: Investigation case page
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CasePage"}
+    post:
+      operationId: createCase
+      summary: Open an investigation case for an alert
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateCase"}
+      responses:
+        "201":
+          description: Case and audit event created atomically
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InvestigationCase"}
+        "404": {description: Alert not found}
+        "409": {description: Alert is closed or already belongs to a case}
+        "422": {description: Case data failed validation}
+  /v1/cases/{case_id}:
+    get:
+      operationId: getCase
+      summary: Get an investigation with comments and audit timeline
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CaseID"}]
+      responses:
+        "200":
+          description: Investigation workspace details
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CaseDetails"}
+        "404": {description: Case not found}
+  /v1/cases/{case_id}/assign:
+    post:
+      operationId: assignCase
+      summary: Assign an investigator
+      description: Requires reviewer or admin role and moves an open case to `in_progress`.
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CaseID"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assignee]
+              properties:
+                assignee: {type: string, minLength: 1, maxLength: 200}
+      responses:
+        "200": {description: Case assigned, content: {application/json: {schema: {$ref: "#/components/schemas/InvestigationCase"}}}}
+        "404": {description: Case not found}
+        "409": {description: Case is resolved}
+  /v1/cases/{case_id}/comments:
+    post:
+      operationId: addCaseComment
+      summary: Add an investigation note
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CaseID"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: {type: string, minLength: 1, maxLength: 4000}
+      responses:
+        "201": {description: Comment and audit event created atomically, content: {application/json: {schema: {$ref: "#/components/schemas/CaseComment"}}}}
+        "404": {description: Case not found}
+        "409": {description: Case is resolved}
+  /v1/cases/{case_id}/resolve:
+    post:
+      operationId: resolveCase
+      summary: Resolve a case and close its linked alert
+      description: Requires reviewer or admin role. The case, alert and both audit events are updated atomically.
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CaseID"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution]
+              properties:
+                resolution: {type: string, minLength: 1, maxLength: 4000}
+      responses:
+        "200": {description: Case resolved, content: {application/json: {schema: {$ref: "#/components/schemas/InvestigationCase"}}}}
+        "404": {description: Case not found}
+        "409": {description: Case or linked alert is already closed}
 components:
   parameters:
     PageSize:
@@ -276,6 +383,11 @@ components:
     CustomerID:
       in: path
       name: customer_id
+      required: true
+      schema: {type: string, format: uuid}
+    CaseID:
+      in: path
+      name: case_id
       required: true
       schema: {type: string, format: uuid}
   securitySchemes:
@@ -382,7 +494,7 @@ components:
       required: [id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload]
       properties:
         id: {type: string, format: uuid}
-        aggregate_type: {type: string, enum: [customer, transaction, alert]}
+        aggregate_type: {type: string, enum: [customer, transaction, alert, case]}
         aggregate_id: {type: string, format: uuid}
         event_type: {type: string}
         actor: {type: string}
@@ -393,6 +505,52 @@ components:
       required: [items]
       properties:
         items: {type: array, items: {$ref: "#/components/schemas/AuditEvent"}}
+        next_page_token: {type: string}
+    CreateCase:
+      type: object
+      required: [alert_id, title, priority]
+      properties:
+        alert_id: {type: string, format: uuid}
+        title: {type: string, minLength: 1, maxLength: 200}
+        priority: {type: string, enum: [low, medium, high]}
+    InvestigationCase:
+      type: object
+      required: [id, alert_id, customer_id, title, priority, status, created_by, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        alert_id: {type: string, format: uuid}
+        customer_id: {type: string, format: uuid}
+        title: {type: string}
+        priority: {type: string, enum: [low, medium, high]}
+        status: {type: string, enum: [open, in_progress, resolved]}
+        assigned_to: {type: string}
+        resolution: {type: string}
+        created_by: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        resolved_by: {type: string}
+        resolved_at: {type: string, format: date-time}
+    CaseComment:
+      type: object
+      required: [id, case_id, author, body, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        case_id: {type: string, format: uuid}
+        author: {type: string}
+        body: {type: string}
+        created_at: {type: string, format: date-time}
+    CaseDetails:
+      type: object
+      required: [case, comments, timeline]
+      properties:
+        case: {$ref: "#/components/schemas/InvestigationCase"}
+        comments: {type: array, items: {$ref: "#/components/schemas/CaseComment"}}
+        timeline: {type: array, items: {$ref: "#/components/schemas/AuditEvent"}}
+    CasePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/InvestigationCase"}}
         next_page_token: {type: string}
     RiskFactors:
       type: object

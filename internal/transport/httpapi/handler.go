@@ -19,6 +19,7 @@ type Handler struct {
 	service            *application.OnboardingService
 	transactionService *application.TransactionService
 	queryService       *application.QueryService
+	caseService        *application.CaseService
 	logger             *slog.Logger
 	readiness          HealthChecker
 }
@@ -27,8 +28,8 @@ type HealthChecker interface {
 	Ping(context.Context) error
 }
 
-func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, queryService *application.QueryService, logger *slog.Logger, authenticator *auth.Authenticator, health HealthChecker) http.Handler {
-	h := &Handler{service: service, transactionService: transactionService, queryService: queryService, logger: logger, readiness: health}
+func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, queryService *application.QueryService, caseService *application.CaseService, logger *slog.Logger, authenticator *auth.Authenticator, health HealthChecker) http.Handler {
+	h := &Handler{service: service, transactionService: transactionService, queryService: queryService, caseService: caseService, logger: logger, readiness: health}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.health)
 	mux.HandleFunc("GET /readyz", h.ready)
@@ -42,7 +43,137 @@ func NewHandler(service *application.OnboardingService, transactionService *appl
 	mux.Handle("POST /v1/transactions", authenticate(authenticator, requireRoles(h.ingestTransaction, auth.RoleAnalyst, auth.RoleAdmin)))
 	mux.Handle("GET /v1/alerts", authenticate(authenticator, requireRoles(h.listAlerts, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/alerts/{alert_id}/close", authenticate(authenticator, requireRoles(h.closeAlert, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("GET /v1/cases", authenticate(authenticator, requireRoles(h.listCases, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("POST /v1/cases", authenticate(authenticator, requireRoles(h.createCase, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("GET /v1/cases/{case_id}", authenticate(authenticator, requireRoles(h.getCase, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("POST /v1/cases/{case_id}/assign", authenticate(authenticator, requireRoles(h.assignCase, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("POST /v1/cases/{case_id}/comments", authenticate(authenticator, requireRoles(h.commentCase, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("POST /v1/cases/{case_id}/resolve", authenticate(authenticator, requireRoles(h.resolveCase, auth.RoleReviewer, auth.RoleAdmin)))
 	return requestLogging(logger, mux)
+}
+
+type caseRequest struct {
+	AlertID  string              `json:"alert_id"`
+	Title    string              `json:"title"`
+	Priority domain.CasePriority `json:"priority"`
+}
+type caseTextRequest struct {
+	Assignee   string `json:"assignee"`
+	Body       string `json:"body"`
+	Resolution string `json:"resolution"`
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, destination any) error {
+	defer r.Body.Close()
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(destination)
+}
+func principalSubject(r *http.Request) string {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	return principal.Subject
+}
+
+func (h *Handler) listCases(w http.ResponseWriter, r *http.Request) {
+	page, err := pageRequest(r)
+	if err != nil {
+		writeError(w, 422, "invalid_page", "Pagination parameters are invalid")
+		return
+	}
+	result, err := h.queryService.ListCases(r.Context(), domain.CaseStatus(r.URL.Query().Get("status")), page)
+	if errors.Is(err, application.ErrInvalidPage) {
+		writeError(w, 422, "invalid_filter", "Case status is invalid")
+		return
+	}
+	if err != nil {
+		h.readError(w, "list cases", err)
+		return
+	}
+	writeJSON(w, 200, result)
+}
+func (h *Handler) getCase(w http.ResponseWriter, r *http.Request) {
+	result, err := h.caseService.Details(r.Context(), r.PathValue("case_id"))
+	if errors.Is(err, domain.ErrCaseNotFound) {
+		writeError(w, 404, "case_not_found", "Case was not found")
+		return
+	}
+	if err != nil {
+		h.readError(w, "get case", err)
+		return
+	}
+	writeJSON(w, 200, result)
+}
+func (h *Handler) createCase(w http.ResponseWriter, r *http.Request) {
+	var request caseRequest
+	if decodeJSON(w, r, &request) != nil {
+		writeError(w, 400, "invalid_json", "Request body is not valid")
+		return
+	}
+	result, err := h.caseService.Create(r.Context(), request.AlertID, request.Title, request.Priority, principalSubject(r))
+	switch {
+	case errors.Is(err, application.ErrInvalidCase):
+		writeError(w, 422, "invalid_case", "Case data failed validation")
+	case errors.Is(err, domain.ErrAlertNotFound):
+		writeError(w, 404, "alert_not_found", "Alert was not found")
+	case errors.Is(err, domain.ErrAlertConflict), errors.Is(err, domain.ErrAlertHasCase):
+		writeError(w, 409, "case_conflict", "Alert cannot be added to a new case")
+	case err != nil:
+		h.readError(w, "create case", err)
+	default:
+		writeJSON(w, 201, result)
+	}
+}
+func (h *Handler) assignCase(w http.ResponseWriter, r *http.Request) {
+	var request caseTextRequest
+	if decodeJSON(w, r, &request) != nil {
+		writeError(w, 400, "invalid_json", "Request body is not valid")
+		return
+	}
+	result, err := h.caseService.Assign(r.Context(), r.PathValue("case_id"), request.Assignee, principalSubject(r))
+	h.writeCaseMutation(w, result, err)
+}
+func (h *Handler) commentCase(w http.ResponseWriter, r *http.Request) {
+	var request caseTextRequest
+	if decodeJSON(w, r, &request) != nil {
+		writeError(w, 400, "invalid_json", "Request body is not valid")
+		return
+	}
+	result, err := h.caseService.Comment(r.Context(), r.PathValue("case_id"), request.Body, principalSubject(r))
+	switch {
+	case errors.Is(err, application.ErrInvalidCase):
+		writeError(w, 422, "invalid_case", "Comment is required")
+	case errors.Is(err, domain.ErrCaseNotFound):
+		writeError(w, 404, "case_not_found", "Case was not found")
+	case errors.Is(err, domain.ErrCaseConflict):
+		writeError(w, 409, "case_conflict", "Resolved cases cannot be changed")
+	case err != nil:
+		h.readError(w, "comment case", err)
+	default:
+		writeJSON(w, 201, result)
+	}
+}
+func (h *Handler) resolveCase(w http.ResponseWriter, r *http.Request) {
+	var request caseTextRequest
+	if decodeJSON(w, r, &request) != nil {
+		writeError(w, 400, "invalid_json", "Request body is not valid")
+		return
+	}
+	result, err := h.caseService.Resolve(r.Context(), r.PathValue("case_id"), request.Resolution, principalSubject(r))
+	h.writeCaseMutation(w, result, err)
+}
+func (h *Handler) writeCaseMutation(w http.ResponseWriter, result domain.InvestigationCase, err error) {
+	switch {
+	case errors.Is(err, application.ErrInvalidCase):
+		writeError(w, 422, "invalid_case", "Case update failed validation")
+	case errors.Is(err, domain.ErrCaseNotFound):
+		writeError(w, 404, "case_not_found", "Case was not found")
+	case errors.Is(err, domain.ErrCaseConflict), errors.Is(err, domain.ErrAlertConflict):
+		writeError(w, 409, "case_conflict", "Resolved cases cannot be changed")
+	case err != nil:
+		h.readError(w, "update case", err)
+	default:
+		writeJSON(w, 200, result)
+	}
 }
 
 func pageRequest(r *http.Request) (application.PageRequest, error) {

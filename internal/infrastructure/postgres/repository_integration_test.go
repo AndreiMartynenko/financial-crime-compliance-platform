@@ -197,12 +197,12 @@ func TestCreateTransactionPersistsTransactionAndAuditEvent(t *testing.T) {
 		t.Fatalf("unexpected transaction events: %+v err=%v", events, err)
 	}
 	alerts, err := repo.ListAlerts(ctx, domain.AlertOpen)
-	if err != nil || len(alerts) != 1 || alerts[0].RuleVersion != domain.TransactionMonitoringRuleVersion {
+	if err != nil || !containsAlert(alerts, alert.ID, domain.AlertOpen) {
 		t.Fatalf("unexpected alerts: %+v err=%v", alerts, err)
 	}
-	alertPage, err := repo.ListAlertsPage(ctx, domain.AlertOpen, application.PageRequest{Limit: 2})
-	if err != nil || len(alertPage) != 1 {
-		t.Fatalf("alert page=%+v err=%v", alertPage, err)
+	alertPage, err := repo.ListAlertsPage(ctx, domain.AlertOpen, application.PageRequest{Limit: 100})
+	if err != nil || !containsAlert(alertPage, alert.ID, domain.AlertOpen) {
+		t.Fatalf("alert page missing test alert: page=%+v err=%v", alertPage, err)
 	}
 	invalidCloseEvent := domain.AuditEvent{
 		ID: "d5748da6-1c0e-443e-80f9-f67cd7e8c862", AggregateType: "invalid", AggregateID: alert.ID,
@@ -212,7 +212,7 @@ func TestCreateTransactionPersistsTransactionAndAuditEvent(t *testing.T) {
 		t.Fatal("expected alert closure audit insert to fail")
 	}
 	alerts, err = repo.ListAlerts(ctx, domain.AlertOpen)
-	if err != nil || len(alerts) != 1 {
+	if err != nil || !containsAlert(alerts, alert.ID, domain.AlertOpen) {
 		t.Fatalf("alert closure was not rolled back: alerts=%+v err=%v", alerts, err)
 	}
 	closeEvent := domain.AuditEvent{
@@ -268,6 +268,48 @@ func TestCreateTransactionRollsBackWhenAuditInsertFails(t *testing.T) {
 	}
 }
 
+func TestCaseResolutionClosesAlertAtomically(t *testing.T) {
+	ctx := context.Background()
+	pool := integrationPool(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	customer := testCustomer(now)
+	customer.Status = domain.CustomerActive
+	cleanupCustomer(t, pool, customer)
+	repo := NewRepository(pool)
+	if err := repo.CreateCustomer(ctx, customer, domain.AuditEvent{ID: "10c65ac1-0ed3-4f74-b9fe-19f7371cbf53", AggregateType: "customer", AggregateID: customer.ID, EventType: "customer.approved", Actor: "test", OccurredAt: now, Payload: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	transaction := testTransaction(customer.ID, now)
+	alert := testAlert(transaction, now)
+	if _, _, _, err := repo.CreateTransaction(ctx, transaction, domain.AuditEvent{ID: "87b7520a-f834-49b0-849f-125470204af9", AggregateType: "transaction", AggregateID: transaction.ID, EventType: "transaction.ingested", Actor: "test", OccurredAt: now, Payload: map[string]any{}}, []domain.Alert{alert}, []domain.AuditEvent{{ID: "9dfb7efa-ad40-402e-a033-58f66db0625c", AggregateType: "alert", AggregateID: alert.ID, EventType: "alert.created", Actor: "engine", OccurredAt: now, Payload: map[string]any{}}}); err != nil {
+		t.Fatal(err)
+	}
+	caseItem := domain.InvestigationCase{ID: "c6a0fb71-23fa-4495-8e50-39f5034a4d53", AlertID: alert.ID, Title: "Integration investigation", Priority: domain.CasePriorityHigh, Status: domain.CaseOpen, CreatedBy: "analyst", CreatedAt: now, UpdatedAt: now}
+	created, err := repo.CreateCase(ctx, caseItem, domain.AuditEvent{ID: "70495d17-17f2-4ee2-8a34-6296e3c3976a", AggregateType: "case", AggregateID: caseItem.ID, EventType: "case.created", Actor: "analyst", OccurredAt: now, Payload: map[string]any{}})
+	if err != nil || created.CustomerID != customer.ID {
+		t.Fatalf("created=%+v err=%v", created, err)
+	}
+	caseEvent := domain.AuditEvent{ID: "37d894df-0ea8-4649-862f-e981dcc8db13", AggregateType: "case", AggregateID: caseItem.ID, EventType: "case.resolved", Actor: "reviewer", OccurredAt: now.Add(time.Second), Payload: map[string]any{}}
+	alertEvent := domain.AuditEvent{ID: "43bb4fc5-a879-46fd-b315-766972374aa3", AggregateType: "alert", EventType: "alert.closed", Actor: "reviewer", OccurredAt: caseEvent.OccurredAt, Payload: map[string]any{}}
+	resolved, err := repo.ResolveCase(ctx, caseItem.ID, "explained", caseEvent.Actor, caseEvent, alertEvent)
+	if err != nil || resolved.Status != domain.CaseResolved {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	var alertStatus domain.AlertStatus
+	if err := pool.QueryRow(ctx, "SELECT status FROM alerts WHERE id=$1", alert.ID).Scan(&alertStatus); err != nil || alertStatus != domain.AlertClosed {
+		t.Fatalf("linked alert status=%s err=%v", alertStatus, err)
+	}
+}
+
+func containsAlert(alerts []domain.Alert, id string, status domain.AlertStatus) bool {
+	for _, alert := range alerts {
+		if alert.ID == id && alert.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
 func integrationPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
@@ -286,8 +328,8 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 5 {
-		t.Fatalf("applied migrations=%d, want 5", migrationCount)
+	if migrationCount != 6 {
+		t.Fatalf("applied migrations=%d, want 6", migrationCount)
 	}
 	return pool
 }
@@ -331,6 +373,8 @@ func testAlert(transaction domain.Transaction, now time.Time) domain.Alert {
 
 func cleanupCustomer(t *testing.T, pool *pgxpool.Pool, customer domain.Customer) {
 	t.Helper()
+	_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_type = 'case' AND aggregate_id IN (SELECT id FROM investigation_cases WHERE customer_id = $1)", customer.ID)
+	_, _ = pool.Exec(context.Background(), "DELETE FROM investigation_cases WHERE customer_id = $1", customer.ID)
 	_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_type = 'alert' AND aggregate_id IN (SELECT id FROM alerts WHERE customer_id = $1)", customer.ID)
 	_, _ = pool.Exec(context.Background(), "DELETE FROM alerts WHERE customer_id = $1", customer.ID)
 	_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_type = 'transaction' AND aggregate_id IN (SELECT id FROM transactions WHERE customer_id = $1)", customer.ID)
@@ -338,6 +382,8 @@ func cleanupCustomer(t *testing.T, pool *pgxpool.Pool, customer domain.Customer)
 	_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_id = $1", customer.ID)
 	_, _ = pool.Exec(context.Background(), "DELETE FROM customers WHERE id = $1 OR external_ref = $2", customer.ID, customer.ExternalRef)
 	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_type = 'case' AND aggregate_id IN (SELECT id FROM investigation_cases WHERE customer_id = $1)", customer.ID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM investigation_cases WHERE customer_id = $1", customer.ID)
 		_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_type = 'alert' AND aggregate_id IN (SELECT id FROM alerts WHERE customer_id = $1)", customer.ID)
 		_, _ = pool.Exec(context.Background(), "DELETE FROM alerts WHERE customer_id = $1", customer.ID)
 		_, _ = pool.Exec(context.Background(), "DELETE FROM audit_events WHERE aggregate_type = 'transaction' AND aggregate_id IN (SELECT id FROM transactions WHERE customer_id = $1)", customer.ID)

@@ -29,6 +29,7 @@ type ReadRepository interface {
 	ListCustomerTransactions(context.Context, string, PageRequest) ([]domain.Transaction, error)
 	ListAuditEventsPage(context.Context, string, PageRequest) ([]domain.AuditEvent, error)
 	ListAlertsPage(context.Context, domain.AlertStatus, PageRequest) ([]domain.Alert, error)
+	ListCasesPage(context.Context, domain.CaseStatus, PageRequest) ([]domain.InvestigationCase, error)
 }
 
 type QueryService struct{ repo ReadRepository }
@@ -104,4 +105,12 @@ func (s *QueryService) ListAlerts(ctx context.Context, status domain.AlertStatus
 	}
 	items, err := s.repo.ListAlertsPage(ctx, status, request)
 	return page(items, request.Limit, func(v domain.Alert) (time.Time, string) { return v.CreatedAt, v.ID }), err
+}
+
+func (s *QueryService) ListCases(ctx context.Context, status domain.CaseStatus, request PageRequest) (Page[domain.InvestigationCase], error) {
+	if status != "" && status != domain.CaseOpen && status != domain.CaseInProgress && status != domain.CaseResolved {
+		return Page[domain.InvestigationCase]{}, ErrInvalidPage
+	}
+	items, err := s.repo.ListCasesPage(ctx, status, request)
+	return page(items, request.Limit, func(v domain.InvestigationCase) (time.Time, string) { return v.UpdatedAt, v.ID }), err
 }
