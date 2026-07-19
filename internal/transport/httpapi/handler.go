@@ -112,7 +112,8 @@ func (h *Handler) ingestTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cmd.Actor = principal.Subject
-	transaction, err := h.transactionService.Ingest(r.Context(), cmd)
+	cmd.IdempotencyKey = r.Header.Get("Idempotency-Key")
+	result, err := h.transactionService.Ingest(r.Context(), cmd)
 	switch {
 	case errors.Is(err, application.ErrInvalidTransaction):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_transaction", "Transaction data failed validation")
@@ -123,12 +124,20 @@ func (h *Handler) ingestTransaction(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, domain.ErrCustomerNotActive):
 		writeError(w, http.StatusConflict, "customer_not_active", "Transactions can only be ingested for active customers")
 		return
+	case errors.Is(err, domain.ErrIdempotencyConflict):
+		writeError(w, http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used with a different request")
+		return
 	case err != nil:
 		h.logger.Error("ingest transaction", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Transaction could not be ingested")
 		return
 	}
-	writeJSON(w, http.StatusCreated, transaction)
+	if result.Replayed {
+		w.Header().Set("Idempotency-Replayed", "true")
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
 }
 
 type reviewRequest struct {

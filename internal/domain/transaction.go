@@ -8,6 +8,7 @@ import (
 var (
 	ErrTransactionNotFound = errors.New("transaction not found")
 	ErrCustomerNotActive   = errors.New("customer is not active")
+	ErrIdempotencyConflict = errors.New("idempotency key was already used for a different transaction")
 )
 
 type TransactionDirection string
@@ -19,6 +20,7 @@ const (
 
 type Transaction struct {
 	ID                  string               `json:"id"`
+	IdempotencyKey      string               `json:"-"`
 	ExternalRef         string               `json:"external_ref"`
 	CustomerID          string               `json:"customer_id"`
 	Direction           TransactionDirection `json:"direction"`
@@ -28,4 +30,14 @@ type Transaction struct {
 	OccurredAt          time.Time            `json:"occurred_at"`
 	IngestedAt          time.Time            `json:"ingested_at"`
 	IngestedBy          string               `json:"ingested_by"`
+}
+
+func (t Transaction) SameIngestionPayload(other Transaction) bool {
+	return t.ExternalRef == other.ExternalRef &&
+		t.CustomerID == other.CustomerID &&
+		t.Direction == other.Direction &&
+		t.AmountMinor == other.AmountMinor &&
+		t.Currency == other.Currency &&
+		t.CounterpartyCountry == other.CounterpartyCountry &&
+		t.OccurredAt.Equal(other.OccurredAt)
 }

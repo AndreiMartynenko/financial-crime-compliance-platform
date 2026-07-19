@@ -15,7 +15,7 @@ var (
 )
 
 type TransactionRepository interface {
-	CreateTransaction(context.Context, domain.Transaction, domain.AuditEvent, []domain.Alert, []domain.AuditEvent) error
+	CreateTransaction(context.Context, domain.Transaction, domain.AuditEvent, []domain.Alert, []domain.AuditEvent) (domain.Transaction, []domain.Alert, bool, error)
 	ListAlerts(context.Context, domain.AlertStatus) ([]domain.Alert, error)
 	CloseAlert(context.Context, string, string, string, domain.AuditEvent) (domain.Alert, error)
 }
@@ -29,6 +29,7 @@ type IngestTransactionCommand struct {
 	CounterpartyCountry string                      `json:"counterparty_country"`
 	OccurredAt          time.Time                   `json:"occurred_at"`
 	Actor               string                      `json:"-"`
+	IdempotencyKey      string                      `json:"-"`
 }
 
 type TransactionService struct {
@@ -39,6 +40,7 @@ type TransactionService struct {
 type IngestTransactionResult struct {
 	Transaction domain.Transaction `json:"transaction"`
 	Alerts      []domain.Alert     `json:"alerts"`
+	Replayed    bool               `json:"-"`
 }
 
 func NewTransactionService(repo TransactionRepository) *TransactionService {
@@ -51,7 +53,8 @@ func (s *TransactionService) Ingest(ctx context.Context, cmd IngestTransactionCo
 	cmd.Currency = strings.ToUpper(strings.TrimSpace(cmd.Currency))
 	cmd.CounterpartyCountry = strings.ToUpper(strings.TrimSpace(cmd.CounterpartyCountry))
 	cmd.Actor = strings.TrimSpace(cmd.Actor)
-	if cmd.CustomerID == "" || cmd.AmountMinor <= 0 || len(cmd.Currency) != 3 || len(cmd.CounterpartyCountry) != 2 || cmd.OccurredAt.IsZero() || cmd.Actor == "" {
+	cmd.IdempotencyKey = strings.TrimSpace(cmd.IdempotencyKey)
+	if cmd.CustomerID == "" || cmd.AmountMinor <= 0 || len(cmd.Currency) != 3 || len(cmd.CounterpartyCountry) != 2 || cmd.OccurredAt.IsZero() || cmd.Actor == "" || cmd.IdempotencyKey == "" || len(cmd.IdempotencyKey) > 200 {
 		return IngestTransactionResult{}, ErrInvalidTransaction
 	}
 	if cmd.Direction != domain.TransactionInbound && cmd.Direction != domain.TransactionOutbound {
@@ -60,9 +63,9 @@ func (s *TransactionService) Ingest(ctx context.Context, cmd IngestTransactionCo
 
 	now := s.now().UTC()
 	transaction := domain.Transaction{
-		ID: newID(), ExternalRef: cmd.ExternalRef, CustomerID: cmd.CustomerID,
+		ID: newID(), IdempotencyKey: cmd.IdempotencyKey, ExternalRef: cmd.ExternalRef, CustomerID: cmd.CustomerID,
 		Direction: cmd.Direction, AmountMinor: cmd.AmountMinor, Currency: cmd.Currency,
-		CounterpartyCountry: cmd.CounterpartyCountry, OccurredAt: cmd.OccurredAt.UTC(),
+		CounterpartyCountry: cmd.CounterpartyCountry, OccurredAt: cmd.OccurredAt.UTC().Truncate(time.Microsecond),
 		IngestedAt: now, IngestedBy: cmd.Actor,
 	}
 	transactionEvent := domain.AuditEvent{
@@ -93,10 +96,11 @@ func (s *TransactionService) Ingest(ctx context.Context, cmd IngestTransactionCo
 			},
 		})
 	}
-	if err := s.repo.CreateTransaction(ctx, transaction, transactionEvent, alerts, alertEvents); err != nil {
+	storedTransaction, storedAlerts, replayed, err := s.repo.CreateTransaction(ctx, transaction, transactionEvent, alerts, alertEvents)
+	if err != nil {
 		return IngestTransactionResult{}, err
 	}
-	return IngestTransactionResult{Transaction: transaction, Alerts: alerts}, nil
+	return IngestTransactionResult{Transaction: storedTransaction, Alerts: storedAlerts, Replayed: replayed}, nil
 }
 
 func (s *TransactionService) ListAlerts(ctx context.Context, status domain.AlertStatus) ([]domain.Alert, error) {

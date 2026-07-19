@@ -134,55 +134,78 @@ func (r *Repository) ReviewCustomer(ctx context.Context, customerID string, deci
 	return customer, nil
 }
 
-func (r *Repository) CreateTransaction(ctx context.Context, transaction domain.Transaction, event domain.AuditEvent, alerts []domain.Alert, alertEvents []domain.AuditEvent) (err error) {
+func (r *Repository) CreateTransaction(ctx context.Context, transaction domain.Transaction, event domain.AuditEvent, alerts []domain.Alert, alertEvents []domain.AuditEvent) (stored domain.Transaction, storedAlerts []domain.Alert, replayed bool, err error) {
 	if len(alerts) != len(alertEvents) {
-		return errors.New("each alert must have one audit event")
+		return domain.Transaction{}, nil, false, errors.New("each alert must have one audit event")
 	}
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return fmt.Errorf("begin ingest transaction: %w", err)
+		return domain.Transaction{}, nil, false, fmt.Errorf("begin ingest transaction: %w", err)
 	}
 	defer func() {
 		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil && rollbackErr != pgx.ErrTxClosed && err == nil {
 			err = fmt.Errorf("rollback ingest transaction: %w", rollbackErr)
 		}
 	}()
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", transaction.IdempotencyKey); err != nil {
+		return domain.Transaction{}, nil, false, fmt.Errorf("lock idempotency key: %w", err)
+	}
+	existing, lookupErr := scanTransaction(tx.QueryRow(ctx, `
+		SELECT id, idempotency_key, external_ref, customer_id, direction, amount_minor,
+			currency, counterparty_country, occurred_at, ingested_at, ingested_by
+		FROM transactions WHERE idempotency_key = $1`, transaction.IdempotencyKey))
+	if lookupErr == nil {
+		if !existing.SameIngestionPayload(transaction) {
+			return domain.Transaction{}, nil, false, domain.ErrIdempotencyConflict
+		}
+		existingAlerts, err := listAlertsForTransaction(ctx, tx, existing.ID)
+		if err != nil {
+			return domain.Transaction{}, nil, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return domain.Transaction{}, nil, false, fmt.Errorf("commit idempotent replay: %w", err)
+		}
+		return existing, existingAlerts, true, nil
+	}
+	if !errors.Is(lookupErr, pgx.ErrNoRows) {
+		return domain.Transaction{}, nil, false, fmt.Errorf("find idempotent transaction: %w", lookupErr)
+	}
 
 	result, err := tx.Exec(ctx, `
 		INSERT INTO transactions (
-			id, external_ref, customer_id, direction, amount_minor, currency,
+			id, idempotency_key, external_ref, customer_id, direction, amount_minor, currency,
 			counterparty_country, occurred_at, ingested_at, ingested_by
 		)
-		SELECT $1, $2, id, $4, $5, $6, $7, $8, $9, $10
+		SELECT $1, $2, $3, id, $5, $6, $7, $8, $9, $10, $11
 		FROM customers
-		WHERE id = $3 AND status = 'active'`,
-		transaction.ID, transaction.ExternalRef, transaction.CustomerID, transaction.Direction,
+		WHERE id = $4 AND status = 'active'`,
+		transaction.ID, transaction.IdempotencyKey, transaction.ExternalRef, transaction.CustomerID, transaction.Direction,
 		transaction.AmountMinor, transaction.Currency, transaction.CounterpartyCountry,
 		transaction.OccurredAt, transaction.IngestedAt, transaction.IngestedBy)
 	if err != nil {
-		return fmt.Errorf("insert transaction: %w", err)
+		return domain.Transaction{}, nil, false, fmt.Errorf("insert transaction: %w", err)
 	}
 	if result.RowsAffected() == 0 {
 		var status domain.CustomerStatus
 		lookupErr := tx.QueryRow(ctx, "SELECT status FROM customers WHERE id = $1", transaction.CustomerID).Scan(&status)
 		if errors.Is(lookupErr, pgx.ErrNoRows) {
-			return domain.ErrCustomerNotFound
+			return domain.Transaction{}, nil, false, domain.ErrCustomerNotFound
 		}
 		if lookupErr != nil {
-			return fmt.Errorf("inspect transaction customer: %w", lookupErr)
+			return domain.Transaction{}, nil, false, fmt.Errorf("inspect transaction customer: %w", lookupErr)
 		}
-		return domain.ErrCustomerNotActive
+		return domain.Transaction{}, nil, false, domain.ErrCustomerNotActive
 	}
 	payload, err := json.Marshal(event.Payload)
 	if err != nil {
-		return fmt.Errorf("marshal transaction audit payload: %w", err)
+		return domain.Transaction{}, nil, false, fmt.Errorf("marshal transaction audit payload: %w", err)
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO audit_events (id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		event.ID, event.AggregateType, event.AggregateID, event.EventType, event.Actor, event.OccurredAt, payload)
 	if err != nil {
-		return fmt.Errorf("insert transaction audit event: %w", err)
+		return domain.Transaction{}, nil, false, fmt.Errorf("insert transaction audit event: %w", err)
 	}
 	for index, alert := range alerts {
 		_, err = tx.Exec(ctx, `
@@ -193,12 +216,12 @@ func (r *Repository) CreateTransaction(ctx context.Context, transaction domain.T
 			alert.ID, alert.TransactionID, alert.CustomerID, alert.RuleCode, alert.RuleVersion,
 			alert.Severity, alert.Status, alert.ReasonCode, alert.Description, alert.CreatedAt)
 		if err != nil {
-			return fmt.Errorf("insert monitoring alert: %w", err)
+			return domain.Transaction{}, nil, false, fmt.Errorf("insert monitoring alert: %w", err)
 		}
 		alertEvent := alertEvents[index]
 		alertPayload, marshalErr := json.Marshal(alertEvent.Payload)
 		if marshalErr != nil {
-			return fmt.Errorf("marshal alert audit payload: %w", marshalErr)
+			return domain.Transaction{}, nil, false, fmt.Errorf("marshal alert audit payload: %w", marshalErr)
 		}
 		_, err = tx.Exec(ctx, `
 			INSERT INTO audit_events (id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload)
@@ -206,13 +229,43 @@ func (r *Repository) CreateTransaction(ctx context.Context, transaction domain.T
 			alertEvent.ID, alertEvent.AggregateType, alertEvent.AggregateID, alertEvent.EventType,
 			alertEvent.Actor, alertEvent.OccurredAt, alertPayload)
 		if err != nil {
-			return fmt.Errorf("insert alert audit event: %w", err)
+			return domain.Transaction{}, nil, false, fmt.Errorf("insert alert audit event: %w", err)
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit ingest transaction: %w", err)
+		return domain.Transaction{}, nil, false, fmt.Errorf("commit ingest transaction: %w", err)
 	}
-	return nil
+	return transaction, alerts, false, nil
+}
+
+func scanTransaction(row scanner) (domain.Transaction, error) {
+	var transaction domain.Transaction
+	err := row.Scan(
+		&transaction.ID, &transaction.IdempotencyKey, &transaction.ExternalRef, &transaction.CustomerID,
+		&transaction.Direction, &transaction.AmountMinor, &transaction.Currency,
+		&transaction.CounterpartyCountry, &transaction.OccurredAt, &transaction.IngestedAt, &transaction.IngestedBy,
+	)
+	return transaction, err
+}
+
+func listAlertsForTransaction(ctx context.Context, tx pgx.Tx, transactionID string) ([]domain.Alert, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id, transaction_id, customer_id, rule_code, rule_version, severity,
+			status, reason_code, description, created_at, closed_at, closed_by, closure_reason
+		FROM alerts WHERE transaction_id = $1 ORDER BY rule_code`, transactionID)
+	if err != nil {
+		return nil, fmt.Errorf("query replayed alerts: %w", err)
+	}
+	defer rows.Close()
+	alerts := make([]domain.Alert, 0)
+	for rows.Next() {
+		alert, err := scanAlert(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan replayed alert: %w", err)
+		}
+		alerts = append(alerts, alert)
+	}
+	return alerts, rows.Err()
 }
 
 func (r *Repository) ListAlerts(ctx context.Context, status domain.AlertStatus) ([]domain.Alert, error) {

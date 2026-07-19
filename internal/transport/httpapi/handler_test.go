@@ -133,6 +133,7 @@ func TestIngestTransactionForActiveCustomer(t *testing.T) {
 	transactionBody := []byte(fmt.Sprintf(`{"external_ref":"PAY-1001","customer_id":%q,"direction":"outbound","amount_minor":2000000,"currency":"gbp","counterparty_country":"ir","occurred_at":"2026-07-19T12:00:00Z"}`, customer.ID))
 	ingestRequest := httptest.NewRequest(http.MethodPost, "/v1/transactions", bytes.NewReader(transactionBody))
 	ingestRequest.Header.Set("Authorization", "Bearer "+signedToken("payments-analyst@example.test", auth.RoleAnalyst))
+	ingestRequest.Header.Set("Idempotency-Key", "payment-PAY-1001")
 	ingestResponse := httptest.NewRecorder()
 	h.ServeHTTP(ingestResponse, ingestRequest)
 	if ingestResponse.Code != http.StatusCreated {
@@ -184,6 +185,29 @@ func TestIngestTransactionForActiveCustomer(t *testing.T) {
 	if err != nil || len(alertEvents) != 2 || alertEvents[1].EventType != "alert.closed" {
 		t.Fatalf("unexpected alert events: %+v err=%v", alertEvents, err)
 	}
+
+	replayRequest := httptest.NewRequest(http.MethodPost, "/v1/transactions", bytes.NewReader(transactionBody))
+	replayRequest.Header.Set("Authorization", "Bearer "+signedToken("payments-analyst@example.test", auth.RoleAnalyst))
+	replayRequest.Header.Set("Idempotency-Key", "payment-PAY-1001")
+	replayResponse := httptest.NewRecorder()
+	h.ServeHTTP(replayResponse, replayRequest)
+	if replayResponse.Code != http.StatusOK || replayResponse.Header().Get("Idempotency-Replayed") != "true" {
+		t.Fatalf("replay status=%d headers=%v body=%s", replayResponse.Code, replayResponse.Header(), replayResponse.Body.String())
+	}
+	var replayed application.IngestTransactionResult
+	if err := json.NewDecoder(replayResponse.Body).Decode(&replayed); err != nil || replayed.Transaction.ID != transaction.ID || len(replayed.Alerts) != 2 {
+		t.Fatalf("replayed=%+v err=%v", replayed, err)
+	}
+
+	conflictingBody := []byte(fmt.Sprintf(`{"external_ref":"PAY-1001","customer_id":%q,"direction":"outbound","amount_minor":3000000,"currency":"GBP","counterparty_country":"IR","occurred_at":"2026-07-19T12:00:00Z"}`, customer.ID))
+	conflictRequest := httptest.NewRequest(http.MethodPost, "/v1/transactions", bytes.NewReader(conflictingBody))
+	conflictRequest.Header.Set("Authorization", "Bearer "+signedToken("payments-analyst@example.test", auth.RoleAnalyst))
+	conflictRequest.Header.Set("Idempotency-Key", "payment-PAY-1001")
+	conflictResponse := httptest.NewRecorder()
+	h.ServeHTTP(conflictResponse, conflictRequest)
+	if conflictResponse.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d body=%s", conflictResponse.Code, conflictResponse.Body.String())
+	}
 }
 
 func TestCannotIngestTransactionForPendingCustomer(t *testing.T) {
@@ -202,6 +226,7 @@ func TestCannotIngestTransactionForPendingCustomer(t *testing.T) {
 	transactionBody := []byte(fmt.Sprintf(`{"customer_id":%q,"direction":"inbound","amount_minor":100,"currency":"GBP","counterparty_country":"GB","occurred_at":"2026-07-19T12:00:00Z"}`, customer.ID))
 	ingestRequest := httptest.NewRequest(http.MethodPost, "/v1/transactions", bytes.NewReader(transactionBody))
 	ingestRequest.Header.Set("Authorization", "Bearer "+signedToken("analyst@example.test", auth.RoleAnalyst))
+	ingestRequest.Header.Set("Idempotency-Key", "pending-customer-payment")
 	ingestResponse := httptest.NewRecorder()
 	h.ServeHTTP(ingestResponse, ingestRequest)
 	if ingestResponse.Code != http.StatusConflict {

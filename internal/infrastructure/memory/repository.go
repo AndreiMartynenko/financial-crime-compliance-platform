@@ -13,33 +13,48 @@ type Repository struct {
 	customers    map[string]domain.Customer
 	transactions map[string]domain.Transaction
 	alerts       map[string]domain.Alert
+	idempotency  map[string]string
 	events       map[string][]domain.AuditEvent
 }
 
 func NewRepository() *Repository {
-	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), events: make(map[string][]domain.AuditEvent)}
+	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), idempotency: make(map[string]string), events: make(map[string][]domain.AuditEvent)}
 }
 
-func (r *Repository) CreateTransaction(_ context.Context, transaction domain.Transaction, event domain.AuditEvent, alerts []domain.Alert, alertEvents []domain.AuditEvent) error {
+func (r *Repository) CreateTransaction(_ context.Context, transaction domain.Transaction, event domain.AuditEvent, alerts []domain.Alert, alertEvents []domain.AuditEvent) (domain.Transaction, []domain.Alert, bool, error) {
 	if len(alerts) != len(alertEvents) {
-		return errors.New("each alert must have one audit event")
+		return domain.Transaction{}, nil, false, errors.New("each alert must have one audit event")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if transactionID, ok := r.idempotency[transaction.IdempotencyKey]; ok {
+		stored := r.transactions[transactionID]
+		if !stored.SameIngestionPayload(transaction) {
+			return domain.Transaction{}, nil, false, domain.ErrIdempotencyConflict
+		}
+		storedAlerts := make([]domain.Alert, 0)
+		for _, alert := range r.alerts {
+			if alert.TransactionID == stored.ID {
+				storedAlerts = append(storedAlerts, alert)
+			}
+		}
+		return stored, storedAlerts, true, nil
+	}
 	customer, ok := r.customers[transaction.CustomerID]
 	if !ok {
-		return domain.ErrCustomerNotFound
+		return domain.Transaction{}, nil, false, domain.ErrCustomerNotFound
 	}
 	if customer.Status != domain.CustomerActive {
-		return domain.ErrCustomerNotActive
+		return domain.Transaction{}, nil, false, domain.ErrCustomerNotActive
 	}
 	r.transactions[transaction.ID] = transaction
+	r.idempotency[transaction.IdempotencyKey] = transaction.ID
 	r.events[transaction.ID] = append(r.events[transaction.ID], event)
 	for index, alert := range alerts {
 		r.alerts[alert.ID] = alert
 		r.events[alert.ID] = append(r.events[alert.ID], alertEvents[index])
 	}
-	return nil
+	return transaction, append([]domain.Alert(nil), alerts...), false, nil
 }
 
 func (r *Repository) ListAlerts(_ context.Context, status domain.AlertStatus) ([]domain.Alert, error) {

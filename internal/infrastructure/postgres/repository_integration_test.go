@@ -147,7 +147,7 @@ func TestCreateTransactionPersistsTransactionAndAuditEvent(t *testing.T) {
 		ID: "78bc3330-a6c2-4531-aace-32c221333750", AggregateType: "alert", AggregateID: alert.ID,
 		EventType: "alert.created", Actor: "transaction-monitoring-engine", OccurredAt: now, Payload: map[string]any{},
 	}
-	if err := repo.CreateTransaction(ctx, transaction, event, []domain.Alert{alert}, []domain.AuditEvent{alertEvent}); err != nil {
+	if _, _, _, err := repo.CreateTransaction(ctx, transaction, event, []domain.Alert{alert}, []domain.AuditEvent{alertEvent}); err != nil {
 		t.Fatal(err)
 	}
 	var count int
@@ -156,6 +156,15 @@ func TestCreateTransactionPersistsTransactionAndAuditEvent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("transaction count=%d, want 1", count)
+	}
+	replayedTransaction, replayedAlerts, replayed, err := repo.CreateTransaction(ctx, transaction, event, []domain.Alert{alert}, []domain.AuditEvent{alertEvent})
+	if err != nil || !replayed || replayedTransaction.ID != transaction.ID || len(replayedAlerts) != 1 {
+		t.Fatalf("replayed transaction=%+v alerts=%+v replayed=%v err=%v", replayedTransaction, replayedAlerts, replayed, err)
+	}
+	conflictingTransaction := transaction
+	conflictingTransaction.AmountMinor++
+	if _, _, _, err := repo.CreateTransaction(ctx, conflictingTransaction, event, nil, nil); !errors.Is(err, domain.ErrIdempotencyConflict) {
+		t.Fatalf("idempotency conflict err=%v", err)
 	}
 	events, err := repo.ListAuditEvents(ctx, transaction.ID)
 	if err != nil || len(events) != 1 || events[0].AggregateType != "transaction" {
@@ -211,7 +220,7 @@ func TestCreateTransactionRollsBackWhenAuditInsertFails(t *testing.T) {
 		ID: "0cbdba0c-18b2-432d-b4b6-c4e94278c92b", AggregateType: "invalid", AggregateID: alert.ID,
 		EventType: "alert.created", Actor: "transaction-monitoring-engine", OccurredAt: now, Payload: map[string]any{},
 	}
-	if err := repo.CreateTransaction(ctx, transaction, transactionEvent, []domain.Alert{alert}, []domain.AuditEvent{invalidAlertEvent}); err == nil {
+	if _, _, _, err := repo.CreateTransaction(ctx, transaction, transactionEvent, []domain.Alert{alert}, []domain.AuditEvent{invalidAlertEvent}); err == nil {
 		t.Fatal("expected transaction audit insert to fail")
 	}
 	var count int
@@ -247,8 +256,8 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 4 {
-		t.Fatalf("applied migrations=%d, want 4", migrationCount)
+	if migrationCount != 5 {
+		t.Fatalf("applied migrations=%d, want 5", migrationCount)
 	}
 	return pool
 }
@@ -273,7 +282,7 @@ func testCustomer(now time.Time) domain.Customer {
 
 func testTransaction(customerID string, now time.Time) domain.Transaction {
 	return domain.Transaction{
-		ID: "45c56ad7-c372-4b2f-bddf-caf14b0494de", ExternalRef: "transaction-integration-test",
+		ID: "45c56ad7-c372-4b2f-bddf-caf14b0494de", IdempotencyKey: "transaction-integration-test-key", ExternalRef: "transaction-integration-test",
 		CustomerID: customerID, Direction: domain.TransactionOutbound, AmountMinor: 125050,
 		Currency: "GBP", CounterpartyCountry: "DE", OccurredAt: now, IngestedAt: now,
 		IngestedBy: "payments-analyst@example.test",

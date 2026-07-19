@@ -37,7 +37,8 @@ Implemented:
 - role-protected alert listing and closure workflow;
 - migration ledger protected by a PostgreSQL advisory lock;
 - separate liveness and database-backed readiness probes;
-- GitHub Actions verification with PostgreSQL integration tests, race detection, vet and container build.
+- GitHub Actions verification with PostgreSQL integration tests, race detection, vet and container build;
+- concurrency-safe idempotent transaction ingestion with replay and payload-conflict detection.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -131,6 +132,7 @@ Ingest a transaction for an active customer:
 curl -i http://localhost:8080/v1/transactions \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $JWT" \
+  -H 'Idempotency-Key: payment-PAY-1001' \
   -d '{
     "external_ref": "PAY-1001",
     "customer_id": "'$CUSTOMER_ID'",
@@ -143,6 +145,8 @@ curl -i http://localhost:8080/v1/transactions \
 ```
 
 `amount_minor` is expressed in the currency's minor unit—for example, `125050` GBP represents GBP 1,250.50. The response includes both the transaction and any alerts raised. Transaction, alerts, and audit events share one PostgreSQL transaction.
+
+Retrying the same request with the same `Idempotency-Key` returns the original response with HTTP `200` and `Idempotency-Replayed: true`; it does not create another transaction, alert, or audit event. Reusing the key with a different payload returns HTTP `409`. PostgreSQL advisory locks serialize concurrent requests for the same key, while a unique index provides a second database-level guarantee.
 
 ## Transaction-monitoring rules
 

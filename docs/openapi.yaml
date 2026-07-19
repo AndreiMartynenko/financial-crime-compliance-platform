@@ -115,12 +115,26 @@ paths:
       description: Requires the `analyst` or `admin` role. Monetary values use integer minor units to avoid floating-point rounding.
       security:
         - bearerAuth: []
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: Stable request key. An exact replay returns the original result; a different payload returns 409.
+          schema: {type: string, minLength: 1, maxLength: 200}
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: "#/components/schemas/IngestTransaction"}
       responses:
+        "200":
+          description: Idempotent replay of an existing transaction; `Idempotency-Replayed` is `true`
+          headers:
+            Idempotency-Replayed:
+              schema: {type: string, enum: ["true"]}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TransactionIngestionResult"}
         "201":
           description: Transaction and its audit event were persisted atomically
           content:
@@ -130,7 +144,7 @@ paths:
         "401": {description: Missing, invalid, or expired bearer token}
         "403": {description: Authenticated role cannot ingest transactions}
         "404": {description: Customer not found}
-        "409": {description: Customer is not active}
+        "409": {description: Customer is not active, or the idempotency key was used with a different payload}
         "422": {description: Transaction validation failed}
         "500": {description: Transaction could not be persisted; the transaction is rolled back}
   /v1/alerts:
