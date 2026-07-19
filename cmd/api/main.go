@@ -119,7 +119,18 @@ func run(logger *slog.Logger) error {
 	dueDiligenceService := application.NewDueDiligenceService(repo)
 	var screeningProvider application.ScreeningProvider = screening.DemoProvider{}
 	if endpoint := os.Getenv("SCREENING_PROVIDER_URL"); endpoint != "" {
-		screeningProvider = screening.NewHTTPProvider(endpoint, os.Getenv("SCREENING_PROVIDER_API_KEY"), providerTimeout, providerRetries, 30*time.Second)
+		allowHTTP, err := envBool("SCREENING_PROVIDER_ALLOW_HTTP", false)
+		if err != nil {
+			return err
+		}
+		externalProvider, err := screening.NewConfiguredHTTPProvider(screening.HTTPProviderConfig{
+			Endpoint: endpoint, APIKey: os.Getenv("SCREENING_PROVIDER_API_KEY"), Name: envString("SCREENING_PROVIDER_NAME", "external-http-screening-v1"), Timeout: providerTimeout, Retries: providerRetries, OpenFor: 30 * time.Second,
+			CAFile: os.Getenv("SCREENING_PROVIDER_CA_FILE"), ClientCertFile: os.Getenv("SCREENING_PROVIDER_CLIENT_CERT_FILE"), ClientKeyFile: os.Getenv("SCREENING_PROVIDER_CLIENT_KEY_FILE"), AllowInsecureHTTP: allowHTTP,
+		})
+		if err != nil {
+			return fmt.Errorf("configure screening provider: %w", err)
+		}
+		screeningProvider = externalProvider
 	}
 	screeningService := application.NewScreeningService(repo, screeningProvider)
 	screeningService.SetLeaseDuration(workerLease)

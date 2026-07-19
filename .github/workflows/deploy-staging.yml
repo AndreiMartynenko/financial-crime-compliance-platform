@@ -51,6 +51,8 @@ jobs:
           SMTP_USERNAME: "${{ secrets.STAGING_SMTP_USERNAME }}"
           SMTP_PASSWORD: "${{ secrets.STAGING_SMTP_PASSWORD }}"
           SMTP_FROM: "${{ secrets.STAGING_SMTP_FROM }}"
+          SCREENING_PROVIDER_URL: "${{ secrets.STAGING_SCREENING_PROVIDER_URL }}"
+          SCREENING_PROVIDER_API_KEY: "${{ secrets.STAGING_SCREENING_PROVIDER_API_KEY }}"
         run: |
           kubectl create namespace fccp-staging --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n fccp-staging create secret generic fccp-secrets \
@@ -60,6 +62,8 @@ jobs:
             --from-literal=SMTP_USERNAME="$SMTP_USERNAME" \
             --from-literal=SMTP_PASSWORD="$SMTP_PASSWORD" \
             --from-literal=SMTP_FROM="$SMTP_FROM" \
+            --from-literal=SCREENING_PROVIDER_URL="$SCREENING_PROVIDER_URL" \
+            --from-literal=SCREENING_PROVIDER_API_KEY="$SCREENING_PROVIDER_API_KEY" \
             --dry-run=client -o yaml | kubectl apply -f -
       - name: Deploy immutable images
         run: |

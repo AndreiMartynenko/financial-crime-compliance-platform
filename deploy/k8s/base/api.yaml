@@ -8,6 +8,7 @@ spec:
     metadata: {labels: {app: fccp-api}}
     spec:
       securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      volumes: [{name: provider-tls, secret: {secretName: fccp-provider-tls, optional: true}}]
       containers:
         - name: api
           image: ghcr.io/andreimartynenko/financial-crime-compliance-platform-api:latest
@@ -17,6 +18,7 @@ spec:
           livenessProbe: {httpGet: {path: /healthz, port: http}, initialDelaySeconds: 10, periodSeconds: 20}
           resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: 1000m, memory: 512Mi}}
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: provider-tls, mountPath: /var/run/secrets/fccp-provider, readOnly: true}]
       terminationGracePeriodSeconds: 30
 ---
 apiVersion: v1

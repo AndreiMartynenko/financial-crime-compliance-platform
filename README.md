@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: SLO and performance release gates
+## Current milestone: Production screening-provider onboarding
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -107,6 +107,10 @@ Implemented:
 - multi-window error-budget burn alerts for a 99.5% availability objective;
 - an authenticated k6 dashboard-read workload and scheduled GitHub performance gate;
 - documented release criteria and initial staging SLOs in `docs/SLO.md`.
+- HTTPS-by-default external screening configuration with optional private CA and mTLS;
+- strict 1 MiB/100-candidate provider-contract validation;
+- stable correlation and idempotency headers across bounded retries;
+- a provider conformance command and an operational onboarding runbook.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -155,6 +159,11 @@ Runtime environment variables:
 | `SCREENING_PROVIDER_API_KEY` | no | none |
 | `SCREENING_PROVIDER_TIMEOUT` | no | `5s` |
 | `SCREENING_PROVIDER_RETRIES` | no | `2` |
+| `SCREENING_PROVIDER_NAME` | no | `external-http-screening-v1` |
+| `SCREENING_PROVIDER_ALLOW_HTTP` | no | `false` |
+| `SCREENING_PROVIDER_CA_FILE` | no | system trust store |
+| `SCREENING_PROVIDER_CLIENT_CERT_FILE` | no | none |
+| `SCREENING_PROVIDER_CLIENT_KEY_FILE` | no | none |
 | `NOTIFICATION_WEBHOOK_URL` | no | webhook delivery disabled |
 | `SMTP_HOST` | no | email delivery disabled |
 | `SMTP_PORT` | no | `587` |
@@ -178,7 +187,7 @@ Runtime environment variables:
 
 `SIGINT` and `SIGTERM` trigger graceful HTTP shutdown before the database pool is closed.
 
-When `SCREENING_PROVIDER_URL` is set, the adapter sends `POST {URL}/screen` with `{"name":"..."}` and expects `{"candidates":[{"list_type":"sanctions|pep|adverse_media","name":"...","score":0,"reason":"..."}]}`. Authentication uses `Authorization: Bearer $SCREENING_PROVIDER_API_KEY`. Network and 5xx failures are retried within the configured bound; repeated failures open the circuit temporarily and feed the ongoing-monitoring backoff state.
+When `SCREENING_PROVIDER_URL` is set, the adapter uses the strict contract and deployment process in [`docs/PROVIDER_ONBOARDING.md`](docs/PROVIDER_ONBOARDING.md). Authentication uses a bearer credential and optionally mTLS. Network and 5xx failures are retried with a stable idempotency key; repeated failures open the circuit temporarily and feed the ongoing-monitoring backoff state.
 
 `GET /healthz` is a process liveness probe. `GET /readyz` verifies that PostgreSQL is reachable and returns `503` when the API should be removed from service. Database migrations are recorded in `schema_migrations` and serialized with a PostgreSQL advisory transaction lock, so concurrent application starts cannot apply the same migration twice.
 
@@ -298,9 +307,9 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Production screening-provider onboarding.
-2. Release hardening and a polished public demo package.
-3. Timed staging resilience and recovery exercises.
+1. Release hardening and a polished public demo package.
+2. Timed staging resilience and recovery exercises.
+3. A real cloud deployment after provider/accounts/domain selection.
 
 ## Important boundary
 
