@@ -408,6 +408,21 @@ func TestScreeningWorkflow(t *testing.T) {
 	if reviewed.Code != http.StatusOK {
 		t.Fatalf("review=%d %s", reviewed.Code, reviewed.Body.String())
 	}
+	scheduleRequest := httptest.NewRequest(http.MethodPut, "/v1/customers/"+customer.ID+"/screening-schedule", bytes.NewReader([]byte(`{"enabled":true,"interval_hours":24}`)))
+	scheduleRequest.Header.Set("Authorization", "Bearer "+signedToken("analyst", auth.RoleAnalyst))
+	scheduled := httptest.NewRecorder()
+	h.ServeHTTP(scheduled, scheduleRequest)
+	var schedule domain.ScreeningSchedule
+	if err := json.NewDecoder(scheduled.Body).Decode(&schedule); err != nil || scheduled.Code != http.StatusOK || !schedule.Enabled || schedule.IntervalHours != 24 {
+		t.Fatalf("schedule=%+v status=%d err=%v", schedule, scheduled.Code, err)
+	}
+	getSchedule := httptest.NewRequest(http.MethodGet, "/v1/customers/"+customer.ID+"/screening-schedule", nil)
+	getSchedule.Header.Set("Authorization", "Bearer "+signedToken("reviewer", auth.RoleReviewer))
+	gotSchedule := httptest.NewRecorder()
+	h.ServeHTTP(gotSchedule, getSchedule)
+	if gotSchedule.Code != http.StatusOK {
+		t.Fatalf("get schedule=%d %s", gotSchedule.Code, gotSchedule.Body.String())
+	}
 }
 
 func TestListCustomersUsesCursorPagination(t *testing.T) {

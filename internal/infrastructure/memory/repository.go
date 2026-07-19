@@ -12,18 +12,19 @@ import (
 )
 
 type Repository struct {
-	mu               sync.RWMutex
-	customers        map[string]domain.Customer
-	transactions     map[string]domain.Transaction
-	alerts           map[string]domain.Alert
-	idempotency      map[string]string
-	events           map[string][]domain.AuditEvent
-	cases            map[string]domain.InvestigationCase
-	caseComments     map[string][]domain.CaseComment
-	cddProfiles      map[string]domain.CDDProfile
-	owners           map[string][]domain.BeneficialOwner
-	documents        map[string]domain.KYCDocument
-	screeningMatches map[string]domain.ScreeningMatch
+	mu                 sync.RWMutex
+	customers          map[string]domain.Customer
+	transactions       map[string]domain.Transaction
+	alerts             map[string]domain.Alert
+	idempotency        map[string]string
+	events             map[string][]domain.AuditEvent
+	cases              map[string]domain.InvestigationCase
+	caseComments       map[string][]domain.CaseComment
+	cddProfiles        map[string]domain.CDDProfile
+	owners             map[string][]domain.BeneficialOwner
+	documents          map[string]domain.KYCDocument
+	screeningMatches   map[string]domain.ScreeningMatch
+	screeningSchedules map[string]domain.ScreeningSchedule
 }
 
 func (r *Repository) GetCustomer(_ context.Context, id string) (domain.Customer, error) {
@@ -149,7 +150,62 @@ func limit[T any](items []T, size int) []T {
 }
 
 func NewRepository() *Repository {
-	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), idempotency: make(map[string]string), events: make(map[string][]domain.AuditEvent), cases: make(map[string]domain.InvestigationCase), caseComments: make(map[string][]domain.CaseComment), cddProfiles: make(map[string]domain.CDDProfile), owners: make(map[string][]domain.BeneficialOwner), documents: make(map[string]domain.KYCDocument), screeningMatches: make(map[string]domain.ScreeningMatch)}
+	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), alerts: make(map[string]domain.Alert), idempotency: make(map[string]string), events: make(map[string][]domain.AuditEvent), cases: make(map[string]domain.InvestigationCase), caseComments: make(map[string][]domain.CaseComment), cddProfiles: make(map[string]domain.CDDProfile), owners: make(map[string][]domain.BeneficialOwner), documents: make(map[string]domain.KYCDocument), screeningMatches: make(map[string]domain.ScreeningMatch), screeningSchedules: make(map[string]domain.ScreeningSchedule)}
+}
+
+func (r *Repository) UpsertScreeningSchedule(_ context.Context, schedule domain.ScreeningSchedule, event domain.AuditEvent) (domain.ScreeningSchedule, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.customers[schedule.CustomerID]; !ok {
+		return schedule, domain.ErrCustomerNotFound
+	}
+	if previous, ok := r.screeningSchedules[schedule.CustomerID]; ok {
+		schedule.LastRunAt = previous.LastRunAt
+	}
+	r.screeningSchedules[schedule.CustomerID] = schedule
+	r.events[schedule.CustomerID] = append(r.events[schedule.CustomerID], event)
+	return schedule, nil
+}
+func (r *Repository) GetScreeningSchedule(_ context.Context, customerID string) (domain.ScreeningSchedule, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	schedule, ok := r.screeningSchedules[customerID]
+	if !ok {
+		return schedule, domain.ErrScreeningScheduleNotFound
+	}
+	return schedule, nil
+}
+func (r *Repository) ListDueScreeningSchedules(_ context.Context, now time.Time, limit int) ([]domain.ScreeningSchedule, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := []domain.ScreeningSchedule{}
+	for _, schedule := range r.screeningSchedules {
+		if schedule.Enabled && !schedule.NextRunAt.After(now) {
+			result = append(result, schedule)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].NextRunAt.Before(result[j].NextRunAt) })
+	return limitItems(result, limit), nil
+}
+func limitItems[T any](items []T, size int) []T {
+	if len(items) > size {
+		return items[:size]
+	}
+	return items
+}
+func (r *Repository) CompleteScreeningSchedule(_ context.Context, customerID string, ranAt time.Time, lastError string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	schedule, ok := r.screeningSchedules[customerID]
+	if !ok {
+		return domain.ErrScreeningScheduleNotFound
+	}
+	schedule.LastRunAt = &ranAt
+	schedule.LastError = lastError
+	schedule.NextRunAt = ranAt.Add(time.Duration(schedule.IntervalHours) * time.Hour)
+	schedule.UpdatedAt = ranAt
+	r.screeningSchedules[customerID] = schedule
+	return nil
 }
 
 func (r *Repository) SaveScreening(_ context.Context, _ []domain.ScreeningRun, matches []domain.ScreeningMatch, events []domain.AuditEvent) error {

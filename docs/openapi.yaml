@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.12.0
+  version: 0.13.0
   description: Portfolio API for authenticated customer-risk assessment, sanctions and PEP screening, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
@@ -241,6 +241,34 @@ paths:
         "200": {description: Match disposition recorded, content: {application/json: {schema: {$ref: "#/components/schemas/ScreeningMatch"}}}}
         "409": {description: Match is no longer pending review}
         "422": {description: Invalid status or missing reason}
+  /v1/customers/{customer_id}/screening-schedule:
+    get:
+      operationId: getScreeningSchedule
+      summary: Get ongoing screening configuration
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      responses:
+        "200": {description: Screening schedule, content: {application/json: {schema: {$ref: "#/components/schemas/ScreeningSchedule"}}}}
+        "404": {description: Ongoing screening is not configured}
+    put:
+      operationId: updateScreeningSchedule
+      summary: Enable, pause or change ongoing screening
+      description: Requires analyst or admin role. The schedule and audit event are persisted atomically.
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/CustomerID"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled, interval_hours]
+              properties:
+                enabled: {type: boolean}
+                interval_hours: {type: integer, minimum: 1, maximum: 8760}
+      responses:
+        "200": {description: Schedule updated, content: {application/json: {schema: {$ref: "#/components/schemas/ScreeningSchedule"}}}}
+        "422": {description: Invalid cadence}
   /v1/customers/{customer_id}/approve:
     post:
       operationId: approveCustomer
@@ -761,6 +789,18 @@ components:
       required: [items]
       properties:
         items: {type: array, items: {$ref: "#/components/schemas/ScreeningMatch"}}
+    ScreeningSchedule:
+      type: object
+      required: [customer_id, enabled, interval_hours, next_run_at, updated_by, updated_at]
+      properties:
+        customer_id: {type: string, format: uuid}
+        enabled: {type: boolean}
+        interval_hours: {type: integer, minimum: 1, maximum: 8760}
+        next_run_at: {type: string, format: date-time}
+        last_run_at: {type: string, format: date-time}
+        last_error: {type: string}
+        updated_by: {type: string}
+        updated_at: {type: string, format: date-time}
     RiskFactors:
       type: object
       required: [country_risk, source_of_funds_verified]

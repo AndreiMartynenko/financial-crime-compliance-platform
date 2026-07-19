@@ -26,7 +26,56 @@ type ScreeningRepository interface {
 	SaveScreening(context.Context, []domain.ScreeningRun, []domain.ScreeningMatch, []domain.AuditEvent) error
 	ListScreeningMatches(context.Context, string) ([]domain.ScreeningMatch, error)
 	DispositionScreeningMatch(context.Context, string, domain.ScreeningMatchStatus, string, string, domain.AuditEvent) (domain.ScreeningMatch, error)
+	UpsertScreeningSchedule(context.Context, domain.ScreeningSchedule, domain.AuditEvent) (domain.ScreeningSchedule, error)
+	GetScreeningSchedule(context.Context, string) (domain.ScreeningSchedule, error)
+	ListDueScreeningSchedules(context.Context, time.Time, int) ([]domain.ScreeningSchedule, error)
+	CompleteScreeningSchedule(context.Context, string, time.Time, string) error
 }
+
+func (s *ScreeningService) ConfigureSchedule(ctx context.Context, customerID string, enabled bool, intervalHours int, actor string) (domain.ScreeningSchedule, error) {
+	customerID, actor = strings.TrimSpace(customerID), strings.TrimSpace(actor)
+	if customerID == "" || actor == "" || intervalHours < 1 || intervalHours > 8760 {
+		return domain.ScreeningSchedule{}, ErrInvalidScreening
+	}
+	if _, err := s.repo.GetCustomer(ctx, customerID); err != nil {
+		return domain.ScreeningSchedule{}, err
+	}
+	now := s.now().UTC()
+	schedule := domain.ScreeningSchedule{CustomerID: customerID, Enabled: enabled, IntervalHours: intervalHours, NextRunAt: now.Add(time.Duration(intervalHours) * time.Hour), UpdatedBy: actor, UpdatedAt: now}
+	event := domain.AuditEvent{ID: newID(), AggregateType: "customer", AggregateID: customerID, EventType: "screening.schedule_updated", Actor: actor, OccurredAt: now, Payload: map[string]any{"enabled": enabled, "interval_hours": intervalHours, "next_run_at": schedule.NextRunAt}}
+	return s.repo.UpsertScreeningSchedule(ctx, schedule, event)
+}
+
+func (s *ScreeningService) GetSchedule(ctx context.Context, customerID string) (domain.ScreeningSchedule, error) {
+	return s.repo.GetScreeningSchedule(ctx, strings.TrimSpace(customerID))
+}
+
+func (s *ScreeningService) RunDue(ctx context.Context, limit int) (int, error) {
+	if limit < 1 {
+		limit = 25
+	}
+	now := s.now().UTC()
+	schedules, err := s.repo.ListDueScreeningSchedules(ctx, now, limit)
+	if err != nil {
+		return 0, err
+	}
+	completed := 0
+	for _, schedule := range schedules {
+		_, runErr := s.ScreenCustomer(ctx, schedule.CustomerID, "ongoing-monitoring-worker")
+		errorText := ""
+		if runErr != nil {
+			errorText = runErr.Error()
+		}
+		if err := s.repo.CompleteScreeningSchedule(ctx, schedule.CustomerID, now, errorText); err != nil {
+			return completed, err
+		}
+		if runErr == nil {
+			completed++
+		}
+	}
+	return completed, nil
+}
+
 type ScreeningService struct {
 	repo     ScreeningRepository
 	provider ScreeningProvider

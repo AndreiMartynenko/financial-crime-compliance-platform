@@ -60,7 +60,48 @@ func NewHandler(service *application.OnboardingService, transactionService *appl
 	mux.Handle("POST /v1/customers/{customer_id}/screenings", authenticate(authenticator, requireRoles(h.screenCustomer, auth.RoleAnalyst, auth.RoleAdmin)))
 	mux.Handle("GET /v1/customers/{customer_id}/screening-matches", authenticate(authenticator, requireRoles(h.listScreeningMatches, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/screening-matches/{match_id}/disposition", authenticate(authenticator, requireRoles(h.dispositionScreeningMatch, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("GET /v1/customers/{customer_id}/screening-schedule", authenticate(authenticator, requireRoles(h.getScreeningSchedule, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("PUT /v1/customers/{customer_id}/screening-schedule", authenticate(authenticator, requireRoles(h.updateScreeningSchedule, auth.RoleAnalyst, auth.RoleAdmin)))
 	return requestLogging(logger, mux)
+}
+
+type screeningScheduleRequest struct {
+	Enabled       bool `json:"enabled"`
+	IntervalHours int  `json:"interval_hours"`
+}
+
+func (h *Handler) getScreeningSchedule(w http.ResponseWriter, r *http.Request) {
+	result, err := h.screeningService.GetSchedule(r.Context(), r.PathValue("customer_id"))
+	if errors.Is(err, domain.ErrScreeningScheduleNotFound) {
+		writeError(w, 404, "schedule_not_found", "Ongoing screening is not configured")
+		return
+	}
+	if err != nil {
+		h.readError(w, "get screening schedule", err)
+		return
+	}
+	writeJSON(w, 200, result)
+}
+func (h *Handler) updateScreeningSchedule(w http.ResponseWriter, r *http.Request) {
+	var request screeningScheduleRequest
+	if decodeJSON(w, r, &request) != nil {
+		writeError(w, 400, "invalid_json", "Request body is not valid")
+		return
+	}
+	result, err := h.screeningService.ConfigureSchedule(r.Context(), r.PathValue("customer_id"), request.Enabled, request.IntervalHours, principalSubject(r))
+	if errors.Is(err, application.ErrInvalidScreening) {
+		writeError(w, 422, "invalid_schedule", "Interval must be between 1 and 8760 hours")
+		return
+	}
+	if errors.Is(err, domain.ErrCustomerNotFound) {
+		writeError(w, 404, "customer_not_found", "Customer was not found")
+		return
+	}
+	if err != nil {
+		h.readError(w, "update screening schedule", err)
+		return
+	}
+	writeJSON(w, 200, result)
 }
 
 type screeningDispositionRequest struct {

@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Sanctions, PEP and adverse-media screening
+## Current milestone: Ongoing customer monitoring
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -60,6 +60,10 @@ Implemented:
 - transactional persistence of screening runs, potential matches and audit events;
 - reviewer/admin match confirmation and false-positive disposition with mandatory rationale;
 - an immutable screening history and role-aware screening workspace.
+- configurable recurring screening schedules per customer;
+- an in-process background worker for due sanctions, PEP and adverse-media re-screening;
+- persisted next/last-run state and operational error visibility;
+- audited enable, pause and cadence changes in the screening workspace.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -91,6 +95,7 @@ Runtime environment variables:
 | `HTTP_ADDR` | no | `:8080` |
 | `HTTP_READ_HEADER_TIMEOUT` | no | `5s` |
 | `HTTP_SHUTDOWN_TIMEOUT` | no | `10s` |
+| `SCREENING_WORKER_INTERVAL` | no | `1m` |
 | `JWT_ISSUER` | yes | Keycloak realm URL in Compose |
 | `JWT_JWKS_URL` | yes | internal Keycloak JWKS URL in Compose |
 | `JWT_AUTHORIZED_PARTY` | no | `fccp-web` |
@@ -219,8 +224,8 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Production-grade external screening-provider adapter and resilient asynchronous rescreening.
-2. Ongoing monitoring schedules, notifications and operational observability.
+1. Durable job claiming for horizontally scaled workers and retry/backoff policies.
+2. Production-grade external screening-provider adapter and notification integrations.
 3. Deployment hardening, secrets management, backups and disaster-recovery procedures.
 
 ## Important boundary

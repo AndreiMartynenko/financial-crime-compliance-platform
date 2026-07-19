@@ -380,6 +380,23 @@ func TestScreeningPersistsAndDisposesMatchAtomically(t *testing.T) {
 	if err != nil || len(events) != 3 {
 		t.Fatalf("events=%+v err=%v", events, err)
 	}
+	schedule := domain.ScreeningSchedule{CustomerID: customer.ID, Enabled: true, IntervalHours: 24, NextRunAt: now.Add(24 * time.Hour), UpdatedBy: "analyst", UpdatedAt: now}
+	scheduleEvent := domain.AuditEvent{ID: "e44dd2f1-6432-411e-a668-a1cf909cf047", AggregateType: "customer", AggregateID: customer.ID, EventType: "screening.schedule_updated", Actor: "analyst", OccurredAt: now, Payload: map[string]any{}}
+	storedSchedule, err := repo.UpsertScreeningSchedule(ctx, schedule, scheduleEvent)
+	if err != nil || !storedSchedule.Enabled || storedSchedule.IntervalHours != 24 {
+		t.Fatalf("schedule=%+v err=%v", storedSchedule, err)
+	}
+	due, err := repo.ListDueScreeningSchedules(ctx, now.Add(25*time.Hour), 10)
+	if err != nil || len(due) != 1 {
+		t.Fatalf("due=%+v err=%v", due, err)
+	}
+	if err := repo.CompleteScreeningSchedule(ctx, customer.ID, now.Add(25*time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
+	completedSchedule, err := repo.GetScreeningSchedule(ctx, customer.ID)
+	if err != nil || completedSchedule.LastRunAt == nil || !completedSchedule.NextRunAt.After(*completedSchedule.LastRunAt) {
+		t.Fatalf("completed schedule=%+v err=%v", completedSchedule, err)
+	}
 }
 
 func containsAlert(alerts []domain.Alert, id string, status domain.AlertStatus) bool {
@@ -409,8 +426,8 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 8 {
-		t.Fatalf("applied migrations=%d, want 8", migrationCount)
+	if migrationCount != 9 {
+		t.Fatalf("applied migrations=%d, want 9", migrationCount)
 	}
 	return pool
 }

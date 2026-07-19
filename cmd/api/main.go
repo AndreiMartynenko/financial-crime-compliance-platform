@@ -44,6 +44,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	workerInterval, err := envDuration("SCREENING_WORKER_INTERVAL", time.Minute)
+	if err != nil {
+		return err
+	}
 	address := envString("HTTP_ADDR", ":8080")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -67,6 +71,9 @@ func run(logger *slog.Logger) error {
 	caseService := application.NewCaseService(repo)
 	dueDiligenceService := application.NewDueDiligenceService(repo)
 	screeningService := application.NewScreeningService(repo, screening.DemoProvider{})
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+	go runScreeningWorker(workerCtx, logger, screeningService, workerInterval)
 	handler := httpapi.NewHandler(service, transactionService, queryService, caseService, dueDiligenceService, screeningService, logger, authenticator, pool)
 
 	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
@@ -94,6 +101,27 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
 	return nil
+}
+
+func runScreeningWorker(ctx context.Context, logger *slog.Logger, service *application.ScreeningService, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("screening worker stopped")
+			return
+		case <-ticker.C:
+			count, err := service.RunDue(ctx, 25)
+			if err != nil {
+				logger.Error("ongoing screening failed", "error", err)
+				continue
+			}
+			if count > 0 {
+				logger.Info("ongoing screening completed", "customers", count)
+			}
+		}
+	}
 }
 
 func envString(name, fallback string) string {

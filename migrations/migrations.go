@@ -32,6 +32,9 @@ var kycCDDSchema string
 //go:embed 000008_screening.up.sql
 var screeningSchema string
 
+//go:embed 000009_ongoing_monitoring.up.sql
+var ongoingMonitoringSchema string
+
 func Up(ctx context.Context, pool *pgxpool.Pool) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -62,6 +65,7 @@ func Up(ctx context.Context, pool *pgxpool.Pool) error {
 		{6, "case_management", caseManagementSchema},
 		{7, "kyc_cdd", kycCDDSchema},
 		{8, "screening", screeningSchema},
+		{9, "ongoing_monitoring", ongoingMonitoringSchema},
 	}
 	for _, migration := range migrationList {
 		var applied bool

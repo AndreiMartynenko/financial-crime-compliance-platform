@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/application"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
@@ -943,6 +944,63 @@ func (r *Repository) DispositionScreeningMatch(ctx context.Context, id string, s
 		return stored, err
 	}
 	return stored, nil
+}
+
+func scanScreeningSchedule(row scanner) (domain.ScreeningSchedule, error) {
+	var schedule domain.ScreeningSchedule
+	err := row.Scan(&schedule.CustomerID, &schedule.Enabled, &schedule.IntervalHours, &schedule.NextRunAt, &schedule.LastRunAt, &schedule.LastError, &schedule.UpdatedBy, &schedule.UpdatedAt)
+	return schedule, err
+}
+
+const screeningScheduleSelect = `customer_id,enabled,interval_hours,next_run_at,last_run_at,last_error,updated_by,updated_at`
+
+func (r *Repository) UpsertScreeningSchedule(ctx context.Context, schedule domain.ScreeningSchedule, event domain.AuditEvent) (stored domain.ScreeningSchedule, err error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return stored, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err = scanScreeningSchedule(tx.QueryRow(ctx, `INSERT INTO screening_schedules(customer_id,enabled,interval_hours,next_run_at,updated_by,updated_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(customer_id) DO UPDATE SET enabled=EXCLUDED.enabled,interval_hours=EXCLUDED.interval_hours,next_run_at=EXCLUDED.next_run_at,last_error='',updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at RETURNING `+screeningScheduleSelect, schedule.CustomerID, schedule.Enabled, schedule.IntervalHours, schedule.NextRunAt, schedule.UpdatedBy, schedule.UpdatedAt))
+	if err != nil {
+		return stored, err
+	}
+	if err = insertAuditEvent(ctx, tx, event); err != nil {
+		return stored, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return stored, err
+	}
+	return stored, nil
+}
+func (r *Repository) GetScreeningSchedule(ctx context.Context, customerID string) (domain.ScreeningSchedule, error) {
+	schedule, err := scanScreeningSchedule(r.pool.QueryRow(ctx, `SELECT `+screeningScheduleSelect+` FROM screening_schedules WHERE customer_id=$1`, customerID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return schedule, domain.ErrScreeningScheduleNotFound
+	}
+	return schedule, err
+}
+func (r *Repository) ListDueScreeningSchedules(ctx context.Context, now time.Time, limit int) ([]domain.ScreeningSchedule, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+screeningScheduleSelect+` FROM screening_schedules WHERE enabled AND next_run_at <= $1 ORDER BY next_run_at LIMIT $2`, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []domain.ScreeningSchedule{}
+	for rows.Next() {
+		item, err := scanScreeningSchedule(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+func (r *Repository) CompleteScreeningSchedule(ctx context.Context, customerID string, ranAt time.Time, lastError string) error {
+	command, err := r.pool.Exec(ctx, `UPDATE screening_schedules SET last_run_at=$2::timestamptz,last_error=$3,next_run_at=$2::timestamptz+(interval_hours * interval '1 hour'),updated_at=$2::timestamptz WHERE customer_id=$1`, customerID, ranAt, lastError)
+	if err == nil && command.RowsAffected() == 0 {
+		return domain.ErrScreeningScheduleNotFound
+	}
+	return err
 }
 
 func nullableCursorID(id string) any {
