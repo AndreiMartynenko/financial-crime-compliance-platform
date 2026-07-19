@@ -37,6 +37,20 @@ jobs:
         run: go test -race -count=1 ./...
       - name: Vet
         run: go vet ./...
+      - name: Verify PostgreSQL backup and restore
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/fccp-backups"
+          docker run --rm --network host \
+            -e DATABASE_URL \
+            -e BACKUP_DIR=/backups \
+            -v "$PWD/scripts:/scripts:ro" \
+            -v "$RUNNER_TEMP/fccp-backups:/backups" \
+            postgres:17-alpine sh -eu -c '
+              backup_path=$(/scripts/postgres-backup.sh)
+              /scripts/postgres-verify-backup.sh "$backup_path"
+            '
       - name: Go vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
       - uses: actions/setup-node@v4

@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Kubernetes staging deployment
+## Current milestone: Backup and disaster recovery
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -94,7 +94,10 @@ Implemented:
 - a cloud-neutral Kubernetes staging overlay with two API and Web replicas;
 - readiness/liveness probes, resource limits, disruption budgets and API autoscaling;
 - default-deny ingress network policies and cert-manager HTTPS ingress;
-- protected manual GitHub deployment with secrets outside Git and immutable SHA-tagged GHCR images.
+- protected manual GitHub deployment with secrets outside Git and immutable SHA-tagged GHCR images;
+- atomic PostgreSQL custom-format backups with SHA-256 integrity files;
+- guarded, transactional database restores and disposable restore verification;
+- CI restore drills and a documented disaster-recovery runbook.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -111,6 +114,8 @@ Operational metrics are available at [http://localhost:8080/metrics](http://loca
 Distributed traces can be explored in Jaeger at [http://localhost:16686](http://localhost:16686).
 
 The production-like staging manifests and deployment prerequisites are documented in [`deploy/k8s/README.md`](deploy/k8s/README.md). They require an external PostgreSQL database, OIDC provider, Kubernetes cluster and DNS name; no cloud account is provisioned automatically.
+
+Database backup, restore verification and incident recovery are documented in [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md). Backup artifacts are intentionally excluded from Git.
 
 Analysts and administrators can register customers from **Customers → New customer**. After an independent reviewer activates a customer, analysts and administrators can ingest and monitor payments from **Customers → Add transaction**. Reviewer-only controls are hidden from unauthorized roles, while the API remains the authoritative authorization boundary.
 
@@ -277,9 +282,9 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Backups, tested restore procedures and disaster-recovery documentation.
-2. Email delivery adapter and notification-channel preferences.
-3. Production provider onboarding, SLO validation and a release/demo package.
+1. Email delivery adapter and notification-channel preferences.
+2. Production provider onboarding and SLO validation.
+3. Release hardening and a polished public demo package.
 
 ## Important boundary
 

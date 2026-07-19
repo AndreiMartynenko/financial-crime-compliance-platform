@@ -106,5 +106,18 @@ services:
       timeout: 3s
       retries: 10
 
+  db-tools:
+    image: postgres:17-alpine
+    profiles: [ops]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://financial_crime:local_development_only@postgres:5432/financial_crime?sslmode=disable
+      BACKUP_DIR: /backups
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./backups:/backups
+
 volumes:
   postgres_data:
