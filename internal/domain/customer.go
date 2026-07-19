@@ -97,10 +97,11 @@ type Customer struct {
 }
 
 type AuditEvent struct {
-	ID          string         `json:"id"`
-	AggregateID string         `json:"aggregate_id"`
-	EventType   string         `json:"event_type"`
-	Actor       string         `json:"actor"`
-	OccurredAt  time.Time      `json:"occurred_at"`
-	Payload     map[string]any `json:"payload"`
+	ID            string         `json:"id"`
+	AggregateType string         `json:"aggregate_type"`
+	AggregateID   string         `json:"aggregate_id"`
+	EventType     string         `json:"event_type"`
+	Actor         string         `json:"actor"`
+	OccurredAt    time.Time      `json:"occurred_at"`
+	Payload       map[string]any `json:"payload"`
 }

@@ -59,9 +59,9 @@ func (r *Repository) CreateCustomer(ctx context.Context, customer domain.Custome
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO audit_events (id, aggregate_id, event_type, actor, occurred_at, payload)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		event.ID, event.AggregateID, event.EventType, event.Actor, event.OccurredAt, payload,
+		INSERT INTO audit_events (id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		event.ID, event.AggregateType, event.AggregateID, event.EventType, event.Actor, event.OccurredAt, payload,
 	)
 	if err != nil {
 		return fmt.Errorf("insert audit event: %w", err)
@@ -122,9 +122,9 @@ func (r *Repository) ReviewCustomer(ctx context.Context, customerID string, deci
 		return domain.Customer{}, fmt.Errorf("marshal review audit payload: %w", err)
 	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO audit_events (id, aggregate_id, event_type, actor, occurred_at, payload)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		event.ID, event.AggregateID, event.EventType, event.Actor, event.OccurredAt, payload)
+		INSERT INTO audit_events (id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		event.ID, event.AggregateType, event.AggregateID, event.EventType, event.Actor, event.OccurredAt, payload)
 	if err != nil {
 		return domain.Customer{}, fmt.Errorf("insert review audit event: %w", err)
 	}
@@ -132,6 +132,59 @@ func (r *Repository) ReviewCustomer(ctx context.Context, customerID string, deci
 		return domain.Customer{}, fmt.Errorf("commit review customer transaction: %w", err)
 	}
 	return customer, nil
+}
+
+func (r *Repository) CreateTransaction(ctx context.Context, transaction domain.Transaction, event domain.AuditEvent) (err error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin ingest transaction: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil && rollbackErr != pgx.ErrTxClosed && err == nil {
+			err = fmt.Errorf("rollback ingest transaction: %w", rollbackErr)
+		}
+	}()
+
+	result, err := tx.Exec(ctx, `
+		INSERT INTO transactions (
+			id, external_ref, customer_id, direction, amount_minor, currency,
+			counterparty_country, occurred_at, ingested_at, ingested_by
+		)
+		SELECT $1, $2, id, $4, $5, $6, $7, $8, $9, $10
+		FROM customers
+		WHERE id = $3 AND status = 'active'`,
+		transaction.ID, transaction.ExternalRef, transaction.CustomerID, transaction.Direction,
+		transaction.AmountMinor, transaction.Currency, transaction.CounterpartyCountry,
+		transaction.OccurredAt, transaction.IngestedAt, transaction.IngestedBy)
+	if err != nil {
+		return fmt.Errorf("insert transaction: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		var status domain.CustomerStatus
+		lookupErr := tx.QueryRow(ctx, "SELECT status FROM customers WHERE id = $1", transaction.CustomerID).Scan(&status)
+		if errors.Is(lookupErr, pgx.ErrNoRows) {
+			return domain.ErrCustomerNotFound
+		}
+		if lookupErr != nil {
+			return fmt.Errorf("inspect transaction customer: %w", lookupErr)
+		}
+		return domain.ErrCustomerNotActive
+	}
+	payload, err := json.Marshal(event.Payload)
+	if err != nil {
+		return fmt.Errorf("marshal transaction audit payload: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO audit_events (id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		event.ID, event.AggregateType, event.AggregateID, event.EventType, event.Actor, event.OccurredAt, payload)
+	if err != nil {
+		return fmt.Errorf("insert transaction audit event: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit ingest transaction: %w", err)
+	}
+	return nil
 }
 
 type scanner interface {
@@ -162,7 +215,7 @@ func scanCustomer(row scanner) (domain.Customer, error) {
 
 func (r *Repository) ListAuditEvents(ctx context.Context, customerID string) ([]domain.AuditEvent, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, aggregate_id, event_type, actor, occurred_at, payload
+		SELECT id, aggregate_type, aggregate_id, event_type, actor, occurred_at, payload
 		FROM audit_events
 		WHERE aggregate_id = $1
 		ORDER BY occurred_at, id`, customerID)
@@ -175,7 +228,7 @@ func (r *Repository) ListAuditEvents(ctx context.Context, customerID string) ([]
 	for rows.Next() {
 		var event domain.AuditEvent
 		var payload []byte
-		if err := rows.Scan(&event.ID, &event.AggregateID, &event.EventType, &event.Actor, &event.OccurredAt, &payload); err != nil {
+		if err := rows.Scan(&event.ID, &event.AggregateType, &event.AggregateID, &event.EventType, &event.Actor, &event.OccurredAt, &payload); err != nil {
 			return nil, fmt.Errorf("scan audit event: %w", err)
 		}
 		if err := json.Unmarshal(payload, &event.Payload); err != nil {

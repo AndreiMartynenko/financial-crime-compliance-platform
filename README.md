@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Maker-checker customer approval
+## Current milestone: Financial transaction ingestion
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -26,7 +26,11 @@ Implemented:
 - customer submissions held in `pending_approval` until independent review;
 - reviewer/admin approval and rejection actions;
 - enforcement that the maker cannot review their own submission;
-- transactional customer-state and audit-event updates for every review decision.
+- transactional customer-state and audit-event updates for every review decision;
+- ingestion of inbound and outbound customer transactions;
+- integer minor-unit monetary amounts without floating-point rounding;
+- enforcement that transactions belong to active customers;
+- atomic transaction and `transaction.ingested` audit-event persistence.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -60,7 +64,7 @@ Runtime environment variables:
 
 `SIGINT` and `SIGTERM` trigger graceful HTTP shutdown before the database pool is closed.
 
-Run the PostgreSQL rollback integration test against a disposable database:
+Run the PostgreSQL persistence and rollback integration tests against a disposable database:
 
 ```bash
 TEST_DATABASE_URL='postgres://financial_crime:local_development_only@localhost:5432/financial_crime?sslmode=disable' go test ./internal/infrastructure/postgres
@@ -112,6 +116,25 @@ curl -i -X POST http://localhost:8080/v1/customers/$CUSTOMER_ID/approve \
 
 Use `/reject` instead of `/approve` to reject a pending submission. Approval/rejection and its audit event are committed in one PostgreSQL transaction.
 
+Ingest a transaction for an active customer:
+
+```bash
+curl -i http://localhost:8080/v1/transactions \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $JWT" \
+  -d '{
+    "external_ref": "PAY-1001",
+    "customer_id": "'$CUSTOMER_ID'",
+    "direction": "outbound",
+    "amount_minor": 125050,
+    "currency": "GBP",
+    "counterparty_country": "DE",
+    "occurred_at": "2026-07-19T12:00:00Z"
+  }'
+```
+
+`amount_minor` is expressed in the currency's minor unit—for example, `125050` GBP represents GBP 1,250.50. Transaction and audit event writes share one PostgreSQL transaction.
+
 ## Risk model
 
 The model is deliberately deterministic and explainable. Each assessment stores the rule version and individual reason codes. The example weights are product-design assumptions for this portfolio project, not legal advice or a production AML policy.
@@ -130,7 +153,7 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Transaction ingestion and versioned monitoring rules.
+1. Versioned transaction-monitoring rules and alert creation.
 2. Alert investigation and case management.
 3. Minimal analyst web interface.
 

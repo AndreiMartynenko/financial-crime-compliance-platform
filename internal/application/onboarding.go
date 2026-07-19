@@ -63,11 +63,12 @@ func (s *OnboardingService) Onboard(ctx context.Context, cmd OnboardCustomerComm
 		return domain.Customer{}, ErrInvalidCustomer
 	}
 	event := domain.AuditEvent{
-		ID:          newID(),
-		AggregateID: customer.ID,
-		EventType:   "customer.submitted",
-		Actor:       actor,
-		OccurredAt:  now,
+		ID:            newID(),
+		AggregateType: "customer",
+		AggregateID:   customer.ID,
+		EventType:     "customer.submitted",
+		Actor:         actor,
+		OccurredAt:    now,
 		Payload: map[string]any{
 			"risk_score":    customer.RiskAssessment.Score,
 			"risk_rating":   customer.RiskAssessment.Rating,
@@ -96,7 +97,7 @@ func (s *OnboardingService) Review(ctx context.Context, customerID string, decis
 		eventType = "customer.rejected"
 	}
 	event := domain.AuditEvent{
-		ID: newID(), AggregateID: customerID, EventType: eventType,
+		ID: newID(), AggregateType: "customer", AggregateID: customerID, EventType: eventType,
 		Actor: actor, OccurredAt: now, Payload: map[string]any{"reason": reason},
 	}
 	return s.repo.ReviewCustomer(ctx, customerID, decision, actor, event)

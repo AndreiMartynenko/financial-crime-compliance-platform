@@ -9,13 +9,29 @@ import (
 )
 
 type Repository struct {
-	mu        sync.RWMutex
-	customers map[string]domain.Customer
-	events    map[string][]domain.AuditEvent
+	mu           sync.RWMutex
+	customers    map[string]domain.Customer
+	transactions map[string]domain.Transaction
+	events       map[string][]domain.AuditEvent
 }
 
 func NewRepository() *Repository {
-	return &Repository{customers: make(map[string]domain.Customer), events: make(map[string][]domain.AuditEvent)}
+	return &Repository{customers: make(map[string]domain.Customer), transactions: make(map[string]domain.Transaction), events: make(map[string][]domain.AuditEvent)}
+}
+
+func (r *Repository) CreateTransaction(_ context.Context, transaction domain.Transaction, event domain.AuditEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	customer, ok := r.customers[transaction.CustomerID]
+	if !ok {
+		return domain.ErrCustomerNotFound
+	}
+	if customer.Status != domain.CustomerActive {
+		return domain.ErrCustomerNotActive
+	}
+	r.transactions[transaction.ID] = transaction
+	r.events[transaction.ID] = append(r.events[transaction.ID], event)
+	return nil
 }
 
 func (r *Repository) CreateCustomer(_ context.Context, customer domain.Customer, event domain.AuditEvent) error {

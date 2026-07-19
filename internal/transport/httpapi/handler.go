@@ -13,18 +13,54 @@ import (
 )
 
 type Handler struct {
-	service *application.OnboardingService
-	logger  *slog.Logger
+	service            *application.OnboardingService
+	transactionService *application.TransactionService
+	logger             *slog.Logger
 }
 
-func NewHandler(service *application.OnboardingService, logger *slog.Logger, authenticator *auth.Authenticator) http.Handler {
-	h := &Handler{service: service, logger: logger}
+func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, logger *slog.Logger, authenticator *auth.Authenticator) http.Handler {
+	h := &Handler{service: service, transactionService: transactionService, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.health)
 	mux.Handle("POST /v1/customers", authenticate(authenticator, requireRoles(h.onboardCustomer, auth.RoleAnalyst, auth.RoleAdmin)))
 	mux.Handle("POST /v1/customers/{customer_id}/approve", authenticate(authenticator, requireRoles(h.reviewCustomer(domain.ReviewApprove), auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/customers/{customer_id}/reject", authenticate(authenticator, requireRoles(h.reviewCustomer(domain.ReviewReject), auth.RoleReviewer, auth.RoleAdmin)))
+	mux.Handle("POST /v1/transactions", authenticate(authenticator, requireRoles(h.ingestTransaction, auth.RoleAnalyst, auth.RoleAdmin)))
 	return requestLogging(logger, mux)
+}
+
+func (h *Handler) ingestTransaction(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	var cmd application.IngestTransactionCommand
+	if err := decoder.Decode(&cmd); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "Request body is not valid")
+		return
+	}
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthenticated", "A valid bearer token is required")
+		return
+	}
+	cmd.Actor = principal.Subject
+	transaction, err := h.transactionService.Ingest(r.Context(), cmd)
+	switch {
+	case errors.Is(err, application.ErrInvalidTransaction):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_transaction", "Transaction data failed validation")
+		return
+	case errors.Is(err, domain.ErrCustomerNotFound):
+		writeError(w, http.StatusNotFound, "customer_not_found", "Customer was not found")
+		return
+	case errors.Is(err, domain.ErrCustomerNotActive):
+		writeError(w, http.StatusConflict, "customer_not_active", "Transactions can only be ingested for active customers")
+		return
+	case err != nil:
+		h.logger.Error("ingest transaction", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Transaction could not be ingested")
+		return
+	}
+	writeJSON(w, http.StatusCreated, transaction)
 }
 
 type reviewRequest struct {

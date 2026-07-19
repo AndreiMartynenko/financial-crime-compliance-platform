@@ -107,6 +107,71 @@ func TestMakerCannotApproveOwnCustomer(t *testing.T) {
 	}
 }
 
+func TestIngestTransactionForActiveCustomer(t *testing.T) {
+	t.Parallel()
+	repo := memory.NewRepository()
+	h := testHandler(t, repo)
+	customerBody := []byte(`{"type":"company","legal_name":"Payments Customer Ltd","country_code":"GB","risk_factors":{"country_risk":"low","source_of_funds_verified":true}}`)
+	createRequest := httptest.NewRequest(http.MethodPost, "/v1/customers", bytes.NewReader(customerBody))
+	createRequest.Header.Set("Authorization", "Bearer "+signedToken("maker@example.test", auth.RoleAnalyst))
+	createResponse := httptest.NewRecorder()
+	h.ServeHTTP(createResponse, createRequest)
+	var customer domain.Customer
+	if err := json.NewDecoder(createResponse.Body).Decode(&customer); err != nil {
+		t.Fatal(err)
+	}
+	reviewRequest := httptest.NewRequest(http.MethodPost, "/v1/customers/"+customer.ID+"/approve", nil)
+	reviewRequest.Header.Set("Authorization", "Bearer "+signedToken("checker@example.test", auth.RoleReviewer))
+	reviewResponse := httptest.NewRecorder()
+	h.ServeHTTP(reviewResponse, reviewRequest)
+	if reviewResponse.Code != http.StatusOK {
+		t.Fatalf("review status=%d body=%s", reviewResponse.Code, reviewResponse.Body.String())
+	}
+
+	transactionBody := []byte(fmt.Sprintf(`{"external_ref":"PAY-1001","customer_id":%q,"direction":"outbound","amount_minor":125050,"currency":"gbp","counterparty_country":"de","occurred_at":"2026-07-19T12:00:00Z"}`, customer.ID))
+	ingestRequest := httptest.NewRequest(http.MethodPost, "/v1/transactions", bytes.NewReader(transactionBody))
+	ingestRequest.Header.Set("Authorization", "Bearer "+signedToken("payments-analyst@example.test", auth.RoleAnalyst))
+	ingestResponse := httptest.NewRecorder()
+	h.ServeHTTP(ingestResponse, ingestRequest)
+	if ingestResponse.Code != http.StatusCreated {
+		t.Fatalf("ingest status=%d body=%s", ingestResponse.Code, ingestResponse.Body.String())
+	}
+	var transaction domain.Transaction
+	if err := json.NewDecoder(ingestResponse.Body).Decode(&transaction); err != nil {
+		t.Fatal(err)
+	}
+	if transaction.Currency != "GBP" || transaction.CounterpartyCountry != "DE" || transaction.AmountMinor != 125050 {
+		t.Fatalf("unexpected transaction: %+v", transaction)
+	}
+	events, err := repo.ListAuditEvents(ingestRequest.Context(), transaction.ID)
+	if err != nil || len(events) != 1 || events[0].EventType != "transaction.ingested" || events[0].AggregateType != "transaction" {
+		t.Fatalf("unexpected transaction events: %+v err=%v", events, err)
+	}
+}
+
+func TestCannotIngestTransactionForPendingCustomer(t *testing.T) {
+	t.Parallel()
+	repo := memory.NewRepository()
+	h := testHandler(t, repo)
+	customerBody := []byte(`{"type":"company","legal_name":"Pending Customer Ltd","country_code":"GB","risk_factors":{"country_risk":"low","source_of_funds_verified":true}}`)
+	createRequest := httptest.NewRequest(http.MethodPost, "/v1/customers", bytes.NewReader(customerBody))
+	createRequest.Header.Set("Authorization", "Bearer "+signedToken("maker@example.test", auth.RoleAnalyst))
+	createResponse := httptest.NewRecorder()
+	h.ServeHTTP(createResponse, createRequest)
+	var customer domain.Customer
+	if err := json.NewDecoder(createResponse.Body).Decode(&customer); err != nil {
+		t.Fatal(err)
+	}
+	transactionBody := []byte(fmt.Sprintf(`{"customer_id":%q,"direction":"inbound","amount_minor":100,"currency":"GBP","counterparty_country":"GB","occurred_at":"2026-07-19T12:00:00Z"}`, customer.ID))
+	ingestRequest := httptest.NewRequest(http.MethodPost, "/v1/transactions", bytes.NewReader(transactionBody))
+	ingestRequest.Header.Set("Authorization", "Bearer "+signedToken("analyst@example.test", auth.RoleAnalyst))
+	ingestResponse := httptest.NewRecorder()
+	h.ServeHTTP(ingestResponse, ingestRequest)
+	if ingestResponse.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", ingestResponse.Code, ingestResponse.Body.String())
+	}
+}
+
 func TestOnboardCustomerRequiresAuthentication(t *testing.T) {
 	t.Parallel()
 	h := testHandler(t, memory.NewRepository())
@@ -138,7 +203,7 @@ func testHandler(t *testing.T, repo *memory.Repository) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(application.NewOnboardingService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator)
+	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator)
 }
 
 func signedToken(subject string, role auth.Role) string {
