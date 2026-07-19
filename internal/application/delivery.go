@@ -10,7 +10,13 @@ import (
 type DeliveryRepository interface {
 	ClaimOutbox(context.Context, time.Time, int, string, time.Time) ([]domain.OutboxMessage, error)
 	CompleteOutbox(context.Context, string, string, time.Time, time.Time, string) error
+	CountPendingOutbox(context.Context) (int, error)
 }
+
+func (s *DeliveryService) Pending(ctx context.Context) (int, error) {
+	return s.repo.CountPendingOutbox(ctx)
+}
+
 type DeliverySender interface {
 	Send(context.Context, string, map[string]any) error
 }

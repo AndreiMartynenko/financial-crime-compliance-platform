@@ -1,0 +1,36 @@
+groups:
+  - name: fccp-operational
+    rules:
+      - alert: FCCPAPIDown
+        expr: up{job="fccp-api"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: FCCP API is unavailable
+          description: Prometheus has been unable to scrape the API for one minute.
+      - alert: FCCPHighServerErrorRate
+        expr: sum(rate(fccp_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(fccp_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: FCCP API 5xx rate is above 5%
+          description: Server errors have exceeded the operational threshold for five minutes.
+      - alert: FCCPScreeningWorkerFailures
+        expr: increase(fccp_screening_worker_errors_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: Ongoing screening worker is failing
+          description: At least one scheduled screening batch failed in the last ten minutes.
+      - alert: FCCPNotificationDeliveryFailures
+        expr: increase(fccp_notification_delivery_errors_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: Notification delivery is failing
+          description: Webhook delivery encountered failures in the last ten minutes.
+      - alert: FCCPNotificationOutboxBacklog
+        expr: fccp_notification_outbox_pending > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: Notification outbox is not draining
+          description: Pending delivery messages have remained in the outbox for fifteen minutes.

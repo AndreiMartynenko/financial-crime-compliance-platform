@@ -99,7 +99,7 @@ func run(logger *slog.Logger) error {
 	go runScreeningWorker(workerCtx, logger, screeningService, metrics, workerInterval)
 	if webhookURL != "" {
 		deliveryService := application.NewDeliveryService(repo, notification.NewWebhookSender(providerTimeout))
-		go runDeliveryWorker(workerCtx, logger, deliveryService, workerInterval)
+		go runDeliveryWorker(workerCtx, logger, deliveryService, metrics, workerInterval)
 	}
 	handler := httpapi.NewHandler(service, transactionService, queryService, caseService, dueDiligenceService, screeningService, logger, authenticator, pool, metrics)
 
@@ -129,7 +129,7 @@ func run(logger *slog.Logger) error {
 	}
 	return nil
 }
-func runDeliveryWorker(ctx context.Context, logger *slog.Logger, service *application.DeliveryService, interval time.Duration) {
+func runDeliveryWorker(ctx context.Context, logger *slog.Logger, service *application.DeliveryService, metrics *observability.Registry, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -138,6 +138,11 @@ func runDeliveryWorker(ctx context.Context, logger *slog.Logger, service *applic
 			return
 		case <-ticker.C:
 			count, err := service.RunDue(ctx, 25)
+			pending, pendingErr := service.Pending(ctx)
+			if err == nil && pendingErr != nil {
+				err = pendingErr
+			}
+			metrics.ObserveDelivery(count, pending, err)
 			if err != nil {
 				logger.Error("notification delivery failed", "error", err)
 			} else if count > 0 {

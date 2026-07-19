@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Reliable notification delivery
+## Current milestone: Actionable operational alerting
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -77,6 +77,9 @@ Implemented:
 - a transactional notification outbox created alongside screening matches and inbox records;
 - leased `SKIP LOCKED` delivery jobs for safe multi-instance webhook workers;
 - persisted delivery attempts, exponential retry backoff and crash recovery.
+- Prometheus counters for delivery runs, failures and successful webhook deliveries;
+- a live outbox backlog gauge and dedicated Grafana panels;
+- actionable alerts for API availability, 5xx rate, screening failures, delivery failures and a stuck outbox.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -250,7 +253,7 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 ## Planned milestones
 
 1. Email delivery adapter and notification-channel preferences.
-2. OpenTelemetry distributed tracing and actionable alert rules.
+2. OpenTelemetry distributed tracing across HTTP, PostgreSQL and workers.
 3. Deployment hardening, secrets management, backups and disaster-recovery procedures.
 
 ## Important boundary

@@ -7,7 +7,10 @@
     {"type":"stat","title":"Screening jobs completed","id":3,"gridPos":{"h":8,"w":6,"x":12,"y":0},"targets":[{"expr":"fccp_screening_jobs_completed_total","legendFormat":"jobs"}]},
     {"type":"stat","title":"Worker errors","id":4,"gridPos":{"h":8,"w":6,"x":18,"y":0},"targets":[{"expr":"fccp_screening_worker_errors_total","legendFormat":"errors"}]},
     {"type":"timeseries","title":"API latency","id":5,"gridPos":{"h":9,"w":12,"x":0,"y":8},"targets":[{"expr":"sum(rate(fccp_http_request_duration_seconds_sum[5m])) by (route) / sum(rate(fccp_http_request_duration_seconds_count[5m])) by (route)","legendFormat":"{{route}}"}]},
-    {"type":"timeseries","title":"Requests by route and status","id":6,"gridPos":{"h":9,"w":12,"x":12,"y":8},"targets":[{"expr":"sum(rate(fccp_http_requests_total[5m])) by (route,status)","legendFormat":"{{route}} {{status}}"}]}
+    {"type":"timeseries","title":"Requests by route and status","id":6,"gridPos":{"h":9,"w":12,"x":12,"y":8},"targets":[{"expr":"sum(rate(fccp_http_requests_total[5m])) by (route,status)","legendFormat":"{{route}} {{status}}"}]},
+    {"type":"stat","title":"Outbox backlog","id":7,"gridPos":{"h":7,"w":8,"x":0,"y":17},"targets":[{"expr":"fccp_notification_outbox_pending","legendFormat":"pending"}]},
+    {"type":"stat","title":"Webhook deliveries","id":8,"gridPos":{"h":7,"w":8,"x":8,"y":17},"targets":[{"expr":"fccp_notification_deliveries_completed_total","legendFormat":"delivered"}]},
+    {"type":"stat","title":"Delivery failures","id":9,"gridPos":{"h":7,"w":8,"x":16,"y":17},"targets":[{"expr":"fccp_notification_delivery_errors_total","legendFormat":"errors"}]}
   ],
   "refresh": "15s",
   "schemaVersion": 39,

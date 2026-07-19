@@ -976,6 +976,11 @@ func (r *Repository) CompleteOutbox(ctx context.Context, id, owner string, attem
 	}
 	return err
 }
+func (r *Repository) CountPendingOutbox(ctx context.Context) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx, `SELECT count(*) FROM notification_outbox WHERE status='pending'`).Scan(&count)
+	return count, err
+}
 func scanScreeningMatch(row scanner) (domain.ScreeningMatch, error) {
 	var m domain.ScreeningMatch
 	var reviewedBy, reason *string

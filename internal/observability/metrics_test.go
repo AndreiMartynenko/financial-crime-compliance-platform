@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,5 +22,17 @@ func TestMetricsMiddlewareRecordsRouteAndRequestID(t *testing.T) {
 	registry.Handler(metrics, request)
 	if body := metrics.Body.String(); !strings.Contains(body, `fccp_http_requests_total{method="GET",route="GET /items/{id}",status="201"} 1`) {
 		t.Fatalf("metrics=%s", body)
+	}
+}
+func TestDeliveryMetrics(t *testing.T) {
+	registry := NewRegistry()
+	registry.ObserveDelivery(2, 3, fmt.Errorf("failed"))
+	response := httptest.NewRecorder()
+	registry.Handler(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := response.Body.String()
+	for _, expected := range []string{"fccp_notification_deliveries_completed_total 2", "fccp_notification_delivery_errors_total 1", "fccp_notification_outbox_pending 3"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("missing %q in %s", expected, body)
+		}
 	}
 }

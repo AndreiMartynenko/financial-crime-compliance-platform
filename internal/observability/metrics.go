@@ -17,11 +17,26 @@ type httpMetric struct {
 	Duration float64
 }
 type Registry struct {
-	mu            sync.RWMutex
-	http          map[string]httpMetric
-	workerRuns    uint64
-	workerErrors  uint64
-	jobsCompleted uint64
+	mu                  sync.RWMutex
+	http                map[string]httpMetric
+	workerRuns          uint64
+	workerErrors        uint64
+	jobsCompleted       uint64
+	deliveryRuns        uint64
+	deliveryErrors      uint64
+	deliveriesCompleted uint64
+	outboxPending       int
+}
+
+func (r *Registry) ObserveDelivery(completed, pending int, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deliveryRuns++
+	r.deliveriesCompleted += uint64(completed)
+	r.outboxPending = pending
+	if err != nil {
+		r.deliveryErrors++
+	}
 }
 
 func NewRegistry() *Registry { return &Registry{http: map[string]httpMetric{}} }
@@ -108,6 +123,18 @@ func (r *Registry) Handler(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintln(w, "# HELP fccp_screening_jobs_completed_total Successfully completed recurring screening jobs.")
 	fmt.Fprintln(w, "# TYPE fccp_screening_jobs_completed_total counter")
 	fmt.Fprintf(w, "fccp_screening_jobs_completed_total %d\n", r.jobsCompleted)
+	fmt.Fprintln(w, "# HELP fccp_notification_delivery_runs_total Notification delivery worker runs.")
+	fmt.Fprintln(w, "# TYPE fccp_notification_delivery_runs_total counter")
+	fmt.Fprintf(w, "fccp_notification_delivery_runs_total %d\n", r.deliveryRuns)
+	fmt.Fprintln(w, "# HELP fccp_notification_delivery_errors_total Notification delivery worker failures.")
+	fmt.Fprintln(w, "# TYPE fccp_notification_delivery_errors_total counter")
+	fmt.Fprintf(w, "fccp_notification_delivery_errors_total %d\n", r.deliveryErrors)
+	fmt.Fprintln(w, "# HELP fccp_notification_deliveries_completed_total Successfully delivered webhook notifications.")
+	fmt.Fprintln(w, "# TYPE fccp_notification_deliveries_completed_total counter")
+	fmt.Fprintf(w, "fccp_notification_deliveries_completed_total %d\n", r.deliveriesCompleted)
+	fmt.Fprintln(w, "# HELP fccp_notification_outbox_pending Pending notification outbox messages.")
+	fmt.Fprintln(w, "# TYPE fccp_notification_outbox_pending gauge")
+	fmt.Fprintf(w, "fccp_notification_outbox_pending %d\n", r.outboxPending)
 }
 
 func newRequestID() string {

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.17.0
+  version: 0.18.0
   description: Portfolio API for authenticated customer-risk assessment, sanctions and PEP screening, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
