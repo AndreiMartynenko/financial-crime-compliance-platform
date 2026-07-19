@@ -13,6 +13,7 @@ import (
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/application"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/auth"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
+	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/observability"
 )
 
 type Handler struct {
@@ -24,17 +25,19 @@ type Handler struct {
 	screeningService    *application.ScreeningService
 	logger              *slog.Logger
 	readiness           HealthChecker
+	metrics             *observability.Registry
 }
 
 type HealthChecker interface {
 	Ping(context.Context) error
 }
 
-func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, queryService *application.QueryService, caseService *application.CaseService, dueDiligenceService *application.DueDiligenceService, screeningService *application.ScreeningService, logger *slog.Logger, authenticator *auth.Authenticator, health HealthChecker) http.Handler {
-	h := &Handler{service: service, transactionService: transactionService, queryService: queryService, caseService: caseService, dueDiligenceService: dueDiligenceService, screeningService: screeningService, logger: logger, readiness: health}
+func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, queryService *application.QueryService, caseService *application.CaseService, dueDiligenceService *application.DueDiligenceService, screeningService *application.ScreeningService, logger *slog.Logger, authenticator *auth.Authenticator, health HealthChecker, metrics *observability.Registry) http.Handler {
+	h := &Handler{service: service, transactionService: transactionService, queryService: queryService, caseService: caseService, dueDiligenceService: dueDiligenceService, screeningService: screeningService, logger: logger, readiness: health, metrics: metrics}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.health)
 	mux.HandleFunc("GET /readyz", h.ready)
+	mux.HandleFunc("GET /metrics", metrics.Handler)
 	mux.Handle("POST /v1/customers", authenticate(authenticator, requireRoles(h.onboardCustomer, auth.RoleAnalyst, auth.RoleAdmin)))
 	mux.Handle("GET /v1/customers", authenticate(authenticator, requireRoles(h.listCustomers, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("GET /v1/customers/{customer_id}", authenticate(authenticator, requireRoles(h.getCustomer, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
@@ -62,7 +65,7 @@ func NewHandler(service *application.OnboardingService, transactionService *appl
 	mux.Handle("POST /v1/screening-matches/{match_id}/disposition", authenticate(authenticator, requireRoles(h.dispositionScreeningMatch, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("GET /v1/customers/{customer_id}/screening-schedule", authenticate(authenticator, requireRoles(h.getScreeningSchedule, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("PUT /v1/customers/{customer_id}/screening-schedule", authenticate(authenticator, requireRoles(h.updateScreeningSchedule, auth.RoleAnalyst, auth.RoleAdmin)))
-	return requestLogging(logger, mux)
+	return metrics.Middleware(requestLogging(logger, mux))
 }
 
 type screeningScheduleRequest struct {
@@ -672,8 +675,9 @@ func requireRoles(next http.HandlerFunc, roles ...auth.Role) http.Handler {
 
 func requestLogging(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger.Info("http request", "method", r.Method, "path", r.URL.Path)
+		started := time.Now()
 		next.ServeHTTP(w, r)
+		logger.Info("http request", "request_id", w.Header().Get("X-Request-ID"), "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(started).Milliseconds())
 	})
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/auth"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/postgres"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/screening"
+	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/observability"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/transport/httpapi"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -76,10 +77,11 @@ func run(logger *slog.Logger) error {
 	dueDiligenceService := application.NewDueDiligenceService(repo)
 	screeningService := application.NewScreeningService(repo, screening.DemoProvider{})
 	screeningService.SetLeaseDuration(workerLease)
+	metrics := observability.NewRegistry()
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
-	go runScreeningWorker(workerCtx, logger, screeningService, workerInterval)
-	handler := httpapi.NewHandler(service, transactionService, queryService, caseService, dueDiligenceService, screeningService, logger, authenticator, pool)
+	go runScreeningWorker(workerCtx, logger, screeningService, metrics, workerInterval)
+	handler := httpapi.NewHandler(service, transactionService, queryService, caseService, dueDiligenceService, screeningService, logger, authenticator, pool, metrics)
 
 	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
 	serverErrors := make(chan error, 1)
@@ -108,7 +110,7 @@ func run(logger *slog.Logger) error {
 	return nil
 }
 
-func runScreeningWorker(ctx context.Context, logger *slog.Logger, service *application.ScreeningService, interval time.Duration) {
+func runScreeningWorker(ctx context.Context, logger *slog.Logger, service *application.ScreeningService, metrics *observability.Registry, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -118,6 +120,7 @@ func runScreeningWorker(ctx context.Context, logger *slog.Logger, service *appli
 			return
 		case <-ticker.C:
 			count, err := service.RunDue(ctx, 25)
+			metrics.ObserveWorker(count, err)
 			if err != nil {
 				logger.Error("ongoing screening failed", "error", err)
 				continue

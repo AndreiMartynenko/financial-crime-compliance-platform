@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Durable ongoing-monitoring jobs
+## Current milestone: Operational observability
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -67,6 +67,9 @@ Implemented:
 - atomic PostgreSQL job claiming with `FOR UPDATE SKIP LOCKED`;
 - expiring worker leases for crash recovery and safe multi-instance processing;
 - exponential retry backoff with a 24-hour cap and persisted failure counters.
+- Prometheus HTTP request, latency and screening-worker metrics;
+- bounded-cardinality route labels and correlation IDs on responses and structured logs;
+- a Docker Compose Prometheus scraper and provisioned Grafana operations dashboard.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -78,6 +81,8 @@ docker compose up --build
 ```
 
 Open the analyst website at [http://localhost:3000](http://localhost:3000). The API remains available at `http://localhost:8080`; browser requests use `/api` through the website reverse proxy.
+
+Operational metrics are available at [http://localhost:8080/metrics](http://localhost:8080/metrics), Prometheus at [http://localhost:9090](http://localhost:9090), and the provisioned read-only Grafana dashboard at [http://localhost:3001](http://localhost:3001).
 
 Analysts and administrators can register customers from **Customers → New customer**. After an independent reviewer activates a customer, analysts and administrators can ingest and monitor payments from **Customers → Add transaction**. Reviewer-only controls are hidden from unauthorized roles, while the API remains the authoritative authorization boundary.
 
@@ -107,6 +112,8 @@ Runtime environment variables:
 | `API_PORT` | Compose only | `8080` |
 | `WEB_PORT` | Compose only | `3000` |
 | `KEYCLOAK_PORT` | Compose only | `8081` |
+| `PROMETHEUS_PORT` | Compose only | `9090` |
+| `GRAFANA_PORT` | Compose only | `3001` |
 
 `SIGINT` and `SIGTERM` trigger graceful HTTP shutdown before the database pool is closed.
 
@@ -229,7 +236,7 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 ## Planned milestones
 
 1. Production-grade external screening-provider adapter and notification integrations.
-2. Prometheus metrics, distributed tracing and alerting dashboards.
+2. OpenTelemetry distributed tracing and actionable alert rules.
 3. Deployment hardening, secrets management, backups and disaster-recovery procedures.
 
 ## Important boundary

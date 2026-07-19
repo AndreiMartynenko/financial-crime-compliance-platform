@@ -21,6 +21,7 @@ import (
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/memory"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/screening"
+	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/observability"
 )
 
 func TestOnboardCustomer(t *testing.T) {
@@ -482,6 +483,7 @@ func TestReadinessFailsWhenDatabaseIsUnavailable(t *testing.T) {
 		application.NewScreeningService(repo, screening.DemoProvider{}),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator,
 		healthCheckerFunc(func(context.Context) error { return errors.New("database unavailable") }),
+		observability.NewRegistry(),
 	)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
@@ -511,7 +513,7 @@ func testHandler(t *testing.T, repo *memory.Repository) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo), application.NewCaseService(repo), application.NewDueDiligenceService(repo), application.NewScreeningService(repo, screening.DemoProvider{}), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator, healthCheckerFunc(func(context.Context) error { return nil }))
+	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), application.NewQueryService(repo), application.NewCaseService(repo), application.NewDueDiligenceService(repo), application.NewScreeningService(repo, screening.DemoProvider{}), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator, healthCheckerFunc(func(context.Context) error { return nil }), observability.NewRegistry())
 }
 
 type healthCheckerFunc func(context.Context) error
