@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Screening provider resilience and operational notifications
+## Current milestone: Reliable notification delivery
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -74,6 +74,9 @@ Implemented:
 - a role-protected compliance inbox with unread count and read attribution;
 - an optional external HTTP screening adapter with timeout, bounded retry and circuit breaker;
 - automatic fallback to the deterministic local provider when no external URL is configured.
+- a transactional notification outbox created alongside screening matches and inbox records;
+- leased `SKIP LOCKED` delivery jobs for safe multi-instance webhook workers;
+- persisted delivery attempts, exponential retry backoff and crash recovery.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -113,6 +116,7 @@ Runtime environment variables:
 | `SCREENING_PROVIDER_API_KEY` | no | none |
 | `SCREENING_PROVIDER_TIMEOUT` | no | `5s` |
 | `SCREENING_PROVIDER_RETRIES` | no | `2` |
+| `NOTIFICATION_WEBHOOK_URL` | no | delivery disabled |
 | `JWT_ISSUER` | yes | Keycloak realm URL in Compose |
 | `JWT_JWKS_URL` | yes | internal Keycloak JWKS URL in Compose |
 | `JWT_AUTHORIZED_PARTY` | no | `fccp-web` |
@@ -245,7 +249,7 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Email/webhook notification delivery with a transactional outbox.
+1. Email delivery adapter and notification-channel preferences.
 2. OpenTelemetry distributed tracing and actionable alert rules.
 3. Deployment hardening, secrets management, backups and disaster-recovery procedures.
 

@@ -217,7 +217,7 @@ func (r *Repository) CompleteScreeningSchedule(_ context.Context, customerID, ow
 	return nil
 }
 
-func (r *Repository) SaveScreening(_ context.Context, _ []domain.ScreeningRun, matches []domain.ScreeningMatch, notifications []domain.Notification, events []domain.AuditEvent) error {
+func (r *Repository) SaveScreening(_ context.Context, _ []domain.ScreeningRun, matches []domain.ScreeningMatch, notifications []domain.Notification, _ []domain.OutboxMessage, events []domain.AuditEvent) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, m := range matches {

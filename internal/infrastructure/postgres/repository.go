@@ -869,7 +869,7 @@ func (r *Repository) ReviewKYCDocument(ctx context.Context, id string, status do
 	return stored, nil
 }
 
-func (r *Repository) SaveScreening(ctx context.Context, runs []domain.ScreeningRun, matches []domain.ScreeningMatch, notifications []domain.Notification, events []domain.AuditEvent) (err error) {
+func (r *Repository) SaveScreening(ctx context.Context, runs []domain.ScreeningRun, matches []domain.ScreeningMatch, notifications []domain.Notification, outbox []domain.OutboxMessage, events []domain.AuditEvent) (err error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -887,6 +887,15 @@ func (r *Repository) SaveScreening(ctx context.Context, runs []domain.ScreeningR
 	}
 	for _, n := range notifications {
 		if _, err = tx.Exec(ctx, `INSERT INTO notifications(id,customer_id,match_id,type,title,message,read,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, n.ID, n.CustomerID, n.MatchID, n.Type, n.Title, n.Message, n.Read, n.CreatedAt); err != nil {
+			return err
+		}
+	}
+	for _, message := range outbox {
+		payload, marshalErr := json.Marshal(message.Payload)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO notification_outbox(id,notification_id,destination,payload,status,attempts,next_attempt_at,last_error,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, message.ID, message.NotificationID, message.Destination, payload, message.Status, message.Attempts, message.NextAttemptAt, message.LastError, message.CreatedAt); err != nil {
 			return err
 		}
 	}
@@ -931,6 +940,41 @@ func (r *Repository) ReadNotification(ctx context.Context, id, actor string, at 
 		return n, domain.ErrNotificationNotFound
 	}
 	return n, err
+}
+func scanOutbox(row scanner) (domain.OutboxMessage, error) {
+	var item domain.OutboxMessage
+	var payload []byte
+	err := row.Scan(&item.ID, &item.NotificationID, &item.Destination, &payload, &item.Status, &item.Attempts, &item.NextAttemptAt, &item.LastError, &item.LeaseOwner, &item.LeaseUntil, &item.CreatedAt, &item.DeliveredAt)
+	if err == nil {
+		err = json.Unmarshal(payload, &item.Payload)
+	}
+	return item, err
+}
+
+const outboxReturning = `o.id,o.notification_id,o.destination,o.payload,o.status,o.attempts,o.next_attempt_at,o.last_error,COALESCE(o.lease_owner,''),o.lease_until,o.created_at,o.delivered_at`
+
+func (r *Repository) ClaimOutbox(ctx context.Context, now time.Time, limit int, owner string, leaseUntil time.Time) ([]domain.OutboxMessage, error) {
+	rows, err := r.pool.Query(ctx, `WITH due AS (SELECT id FROM notification_outbox WHERE status='pending' AND next_attempt_at<=$1 AND (lease_until IS NULL OR lease_until<=$1) ORDER BY next_attempt_at FOR UPDATE SKIP LOCKED LIMIT $2) UPDATE notification_outbox o SET lease_owner=$3,lease_until=$4 FROM due WHERE o.id=due.id RETURNING `+outboxReturning, now, limit, owner, leaseUntil)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []domain.OutboxMessage{}
+	for rows.Next() {
+		item, err := scanOutbox(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+func (r *Repository) CompleteOutbox(ctx context.Context, id, owner string, attemptedAt, next time.Time, lastError string) error {
+	command, err := r.pool.Exec(ctx, `UPDATE notification_outbox SET status=CASE WHEN $5='' THEN 'delivered' ELSE 'pending' END,attempts=attempts+1,next_attempt_at=$4::timestamptz,last_error=$5,delivered_at=CASE WHEN $5='' THEN $3::timestamptz ELSE NULL END,lease_owner=NULL,lease_until=NULL WHERE id=$1 AND lease_owner=$2`, id, owner, attemptedAt, next, lastError)
+	if err == nil && command.RowsAffected() == 0 {
+		return domain.ErrNotificationNotFound
+	}
+	return err
 }
 func scanScreeningMatch(row scanner) (domain.ScreeningMatch, error) {
 	var m domain.ScreeningMatch

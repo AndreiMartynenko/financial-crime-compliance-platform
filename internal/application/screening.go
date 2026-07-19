@@ -24,7 +24,7 @@ type ScreeningProvider interface {
 type ScreeningRepository interface {
 	GetCustomer(context.Context, string) (domain.Customer, error)
 	GetDueDiligence(context.Context, string) (domain.DueDiligenceDetails, error)
-	SaveScreening(context.Context, []domain.ScreeningRun, []domain.ScreeningMatch, []domain.Notification, []domain.AuditEvent) error
+	SaveScreening(context.Context, []domain.ScreeningRun, []domain.ScreeningMatch, []domain.Notification, []domain.OutboxMessage, []domain.AuditEvent) error
 	ListScreeningMatches(context.Context, string) ([]domain.ScreeningMatch, error)
 	DispositionScreeningMatch(context.Context, string, domain.ScreeningMatchStatus, string, string, domain.AuditEvent) (domain.ScreeningMatch, error)
 	UpsertScreeningSchedule(context.Context, domain.ScreeningSchedule, domain.AuditEvent) (domain.ScreeningSchedule, error)
@@ -122,6 +122,7 @@ type ScreeningService struct {
 	now           func() time.Time
 	workerID      string
 	leaseDuration time.Duration
+	webhookURL    string
 }
 
 func NewScreeningService(repo ScreeningRepository, provider ScreeningProvider) *ScreeningService {
@@ -132,6 +133,7 @@ func (s *ScreeningService) SetLeaseDuration(duration time.Duration) {
 		s.leaseDuration = duration
 	}
 }
+func (s *ScreeningService) SetNotificationWebhook(url string) { s.webhookURL = strings.TrimSpace(url) }
 func (s *ScreeningService) ScreenCustomer(ctx context.Context, customerID, actor string) (domain.ScreeningResult, error) {
 	customerID = strings.TrimSpace(customerID)
 	actor = strings.TrimSpace(actor)
@@ -158,6 +160,7 @@ func (s *ScreeningService) ScreenCustomer(ctx context.Context, customerID, actor
 	result := domain.ScreeningResult{Runs: []domain.ScreeningRun{}, Matches: []domain.ScreeningMatch{}}
 	events := []domain.AuditEvent{}
 	notifications := []domain.Notification{}
+	outbox := []domain.OutboxMessage{}
 	for _, subject := range subjects {
 		candidates, err := s.provider.Screen(ctx, subject.name)
 		if err != nil {
@@ -168,11 +171,15 @@ func (s *ScreeningService) ScreenCustomer(ctx context.Context, customerID, actor
 		for _, candidate := range candidates {
 			match := domain.ScreeningMatch{ID: newID(), RunID: run.ID, CustomerID: customerID, SubjectType: subject.kind, SubjectID: subject.id, QueryName: subject.name, ListType: candidate.ListType, MatchedName: candidate.Name, Score: candidate.Score, Reason: candidate.Reason, Status: domain.MatchPotential, CreatedAt: now}
 			result.Matches = append(result.Matches, match)
-			notifications = append(notifications, domain.Notification{ID: newID(), CustomerID: customerID, MatchID: match.ID, Type: "screening_match", Title: "Potential " + string(candidate.ListType) + " match", Message: subject.name + " matched " + candidate.Name, CreatedAt: now})
+			notification := domain.Notification{ID: newID(), CustomerID: customerID, MatchID: match.ID, Type: "screening_match", Title: "Potential " + string(candidate.ListType) + " match", Message: subject.name + " matched " + candidate.Name, CreatedAt: now}
+			notifications = append(notifications, notification)
+			if s.webhookURL != "" {
+				outbox = append(outbox, domain.OutboxMessage{ID: newID(), NotificationID: notification.ID, Destination: s.webhookURL, Payload: map[string]any{"id": notification.ID, "customer_id": customerID, "match_id": match.ID, "title": notification.Title, "message": notification.Message, "created_at": now}, Status: "pending", NextAttemptAt: now, CreatedAt: now})
+			}
 		}
 		events = append(events, domain.AuditEvent{ID: newID(), AggregateType: "customer", AggregateID: customerID, EventType: "screening.completed", Actor: actor, OccurredAt: now, Payload: map[string]any{"run_id": run.ID, "subject_type": subject.kind, "subject_id": subject.id, "match_count": len(candidates), "provider": s.provider.Name()}})
 	}
-	if err := s.repo.SaveScreening(ctx, result.Runs, result.Matches, notifications, events); err != nil {
+	if err := s.repo.SaveScreening(ctx, result.Runs, result.Matches, notifications, outbox, events); err != nil {
 		return domain.ScreeningResult{}, err
 	}
 	return result, nil

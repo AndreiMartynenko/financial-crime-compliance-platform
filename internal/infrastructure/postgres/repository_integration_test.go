@@ -365,7 +365,8 @@ func TestScreeningPersistsAndDisposesMatchAtomically(t *testing.T) {
 	match := domain.ScreeningMatch{ID: "384c015e-5855-42d1-a745-f545489d8c6b", RunID: run.ID, CustomerID: customer.ID, SubjectType: domain.ScreeningCustomer, SubjectID: customer.ID, QueryName: customer.LegalName, ListType: domain.ScreeningSanctions, MatchedName: customer.LegalName, Score: 100, Reason: "exact match", Status: domain.MatchPotential, CreatedAt: now}
 	createdEvent := domain.AuditEvent{ID: "d0b199d7-61c9-42a8-b6dc-2b3c9710ae30", AggregateType: "customer", AggregateID: customer.ID, EventType: "screening.completed", Actor: "analyst", OccurredAt: now, Payload: map[string]any{"matches": float64(1)}}
 	notification := domain.Notification{ID: "1c4b78b8-5f66-46da-b80c-c5cfbe29f2c1", CustomerID: customer.ID, MatchID: match.ID, Type: "screening_match", Title: "Potential sanctions match", Message: "Review match", CreatedAt: now}
-	if err := repo.SaveScreening(ctx, []domain.ScreeningRun{run}, []domain.ScreeningMatch{match}, []domain.Notification{notification}, []domain.AuditEvent{createdEvent}); err != nil {
+	outbox := domain.OutboxMessage{ID: "c34554d0-6546-49ea-8afc-87aad87a7f74", NotificationID: notification.ID, Destination: "http://webhook.test", Payload: map[string]any{"notification_id": notification.ID}, Status: "pending", NextAttemptAt: now, CreatedAt: now}
+	if err := repo.SaveScreening(ctx, []domain.ScreeningRun{run}, []domain.ScreeningMatch{match}, []domain.Notification{notification}, []domain.OutboxMessage{outbox}, []domain.AuditEvent{createdEvent}); err != nil {
 		t.Fatal(err)
 	}
 	notifications, err := repo.ListNotifications(ctx, 10)
@@ -375,6 +376,17 @@ func TestScreeningPersistsAndDisposesMatchAtomically(t *testing.T) {
 	read, err := repo.ReadNotification(ctx, notification.ID, "reviewer", now.Add(time.Second))
 	if err != nil || !read.Read || read.ReadBy != "reviewer" {
 		t.Fatalf("notification=%+v err=%v", read, err)
+	}
+	claimed, err := repo.ClaimOutbox(ctx, now.Add(time.Second), 10, "delivery-worker", now.Add(time.Minute))
+	if err != nil || len(claimed) < 1 {
+		t.Fatalf("outbox=%+v err=%v", claimed, err)
+	}
+	if err := repo.CompleteOutbox(ctx, outbox.ID, "delivery-worker", now.Add(time.Second), now.Add(time.Second), ""); err != nil {
+		t.Fatal(err)
+	}
+	var outboxStatus string
+	if err := pool.QueryRow(ctx, "SELECT status FROM notification_outbox WHERE id=$1", outbox.ID).Scan(&outboxStatus); err != nil || outboxStatus != "delivered" {
+		t.Fatalf("outbox status=%s err=%v", outboxStatus, err)
 	}
 	matches, err := repo.ListScreeningMatches(ctx, customer.ID)
 	if err != nil || len(matches) != 1 || matches[0].Status != domain.MatchPotential {
@@ -445,8 +457,8 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 11 {
-		t.Fatalf("applied migrations=%d, want 11", migrationCount)
+	if migrationCount != 12 {
+		t.Fatalf("applied migrations=%d, want 12", migrationCount)
 	}
 	return pool
 }

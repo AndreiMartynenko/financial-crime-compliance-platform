@@ -13,6 +13,7 @@ import (
 
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/application"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/auth"
+	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/notification"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/postgres"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/screening"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/observability"
@@ -90,10 +91,16 @@ func run(logger *slog.Logger) error {
 	}
 	screeningService := application.NewScreeningService(repo, screeningProvider)
 	screeningService.SetLeaseDuration(workerLease)
+	webhookURL := os.Getenv("NOTIFICATION_WEBHOOK_URL")
+	screeningService.SetNotificationWebhook(webhookURL)
 	metrics := observability.NewRegistry()
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go runScreeningWorker(workerCtx, logger, screeningService, metrics, workerInterval)
+	if webhookURL != "" {
+		deliveryService := application.NewDeliveryService(repo, notification.NewWebhookSender(providerTimeout))
+		go runDeliveryWorker(workerCtx, logger, deliveryService, workerInterval)
+	}
 	handler := httpapi.NewHandler(service, transactionService, queryService, caseService, dueDiligenceService, screeningService, logger, authenticator, pool, metrics)
 
 	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
@@ -121,6 +128,23 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
 	return nil
+}
+func runDeliveryWorker(ctx context.Context, logger *slog.Logger, service *application.DeliveryService, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			count, err := service.RunDue(ctx, 25)
+			if err != nil {
+				logger.Error("notification delivery failed", "error", err)
+			} else if count > 0 {
+				logger.Info("notifications delivered", "count", count)
+			}
+		}
+	}
 }
 
 func runScreeningWorker(ctx context.Context, logger *slog.Logger, service *application.ScreeningService, metrics *observability.Registry, interval time.Duration) {
