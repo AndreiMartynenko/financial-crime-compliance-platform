@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Production screening-provider onboarding
+## Current milestone: Release-candidate packaging
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -111,6 +111,10 @@ Implemented:
 - strict 1 MiB/100-candidate provider-contract validation;
 - stable correlation and idempotency headers across bounded retries;
 - a provider conformance command and an operational onboarding runbook.
+- a guarded, idempotent synthetic demo-data command using the real application services;
+- system-context, transaction-boundary, deployment, and trust-boundary architecture documentation;
+- a repeatable five-minute product walkthrough and release checklist;
+- tag-triggered release automation with immutable GHCR images, an SPDX SBOM, SHA-256 checksums, provenance attestation, and a GitHub Release bundle.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -126,6 +130,8 @@ Open the analyst website at [http://localhost:3000](http://localhost:3000). The 
 Operational metrics are available at [http://localhost:8080/metrics](http://localhost:8080/metrics), Prometheus at [http://localhost:9090](http://localhost:9090), and the provisioned read-only Grafana dashboard at [http://localhost:3001](http://localhost:3001).
 Distributed traces can be explored in Jaeger at [http://localhost:16686](http://localhost:16686).
 Initial reliability objectives and the authenticated load-test procedure are documented in [`docs/SLO.md`](docs/SLO.md).
+
+Start with the [architecture overview](docs/ARCHITECTURE.md), then use the [synthetic product demo](docs/DEMO.md). Before creating a version tag, complete the [release checklist](docs/RELEASE_CHECKLIST.md).
 
 The production-like staging manifests and deployment prerequisites are documented in [`deploy/k8s/README.md`](deploy/k8s/README.md). They require an external PostgreSQL database, OIDC provider, Kubernetes cluster and DNS name; no cloud account is provisioned automatically.
 
@@ -186,6 +192,16 @@ Runtime environment variables:
 | `OTLP_HTTP_PORT` | Compose only | `4318` |
 
 `SIGINT` and `SIGTERM` trigger graceful HTTP shutdown before the database pool is closed.
+
+To populate a local database with three stable synthetic customer journeys, use the explicitly guarded demo command:
+
+```bash
+DATABASE_URL='postgres://financial_crime:local_development_only@localhost:55432/financial_crime?sslmode=disable' \
+CONFIRM_DEMO_SEED=seed \
+go run ./cmd/demoseed
+```
+
+The command is idempotent once the complete dataset exists and refuses to overwrite a partial dataset. It has no destructive reset mode.
 
 When `SCREENING_PROVIDER_URL` is set, the adapter uses the strict contract and deployment process in [`docs/PROVIDER_ONBOARDING.md`](docs/PROVIDER_ONBOARDING.md). Authentication uses a bearer credential and optionally mTLS. Network and 5xx failures are retried with a stable idempotency key; repeated failures open the circuit temporarily and feed the ongoing-monitoring backoff state.
 
@@ -307,9 +323,9 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. Release hardening and a polished public demo package.
-2. Timed staging resilience and recovery exercises.
-3. A real cloud deployment after provider/accounts/domain selection.
+1. Timed staging resilience, failover, and recovery exercises with retained evidence.
+2. A real cloud deployment after provider, account, region, domain, and data-residency selection.
+3. Jurisdiction-specific compliance policy, privacy/retention, licensed data, independent security review, and operating-model approval.
 
 ## Important boundary
 
