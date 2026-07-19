@@ -5,6 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"strings"
 	"time"
 )
@@ -162,7 +166,13 @@ func (s *ScreeningService) ScreenCustomer(ctx context.Context, customerID, actor
 	notifications := []domain.Notification{}
 	outbox := []domain.OutboxMessage{}
 	for _, subject := range subjects {
-		candidates, err := s.provider.Screen(ctx, subject.name)
+		providerCtx, providerSpan := otel.Tracer("fccp/screening").Start(ctx, "screening.provider", trace.WithAttributes(attribute.String("screening.provider", s.provider.Name()), attribute.String("screening.subject_type", string(subject.kind))))
+		candidates, err := s.provider.Screen(providerCtx, subject.name)
+		if err != nil {
+			providerSpan.RecordError(err)
+			providerSpan.SetStatus(codes.Error, err.Error())
+		}
+		providerSpan.End()
 		if err != nil {
 			return result, err
 		}

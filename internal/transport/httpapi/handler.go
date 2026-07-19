@@ -67,7 +67,7 @@ func NewHandler(service *application.OnboardingService, transactionService *appl
 	mux.Handle("PUT /v1/customers/{customer_id}/screening-schedule", authenticate(authenticator, requireRoles(h.updateScreeningSchedule, auth.RoleAnalyst, auth.RoleAdmin)))
 	mux.Handle("GET /v1/notifications", authenticate(authenticator, requireRoles(h.listNotifications, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/notifications/{notification_id}/read", authenticate(authenticator, requireRoles(h.readNotification, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
-	return metrics.Middleware(requestLogging(logger, mux))
+	return observability.TraceMiddleware(metrics.Middleware(requestLogging(logger, mux)))
 }
 func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
 	items, err := h.screeningService.ListNotifications(r.Context(), 100)
@@ -699,7 +699,8 @@ func requestLogging(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		next.ServeHTTP(w, r)
-		logger.Info("http request", "request_id", w.Header().Get("X-Request-ID"), "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(started).Milliseconds())
+		traceID, spanID := observability.TraceIDs(r.Context())
+		logger.Info("http request", "request_id", w.Header().Get("X-Request-ID"), "trace_id", traceID, "span_id", spanID, "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(started).Milliseconds())
 	})
 }
 

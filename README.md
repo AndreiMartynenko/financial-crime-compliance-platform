@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Actionable operational alerting
+## Current milestone: Distributed tracing
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -80,6 +80,11 @@ Implemented:
 - Prometheus counters for delivery runs, failures and successful webhook deliveries;
 - a live outbox backlog gauge and dedicated Grafana panels;
 - actionable alerts for API availability, 5xx rate, screening failures, delivery failures and a stuck outbox.
+- OpenTelemetry spans for inbound HTTP requests and PostgreSQL queries;
+- child spans for screening providers and webhook delivery;
+- root spans for recurring screening and notification workers;
+- W3C `traceparent` propagation plus trace/span IDs in structured request logs;
+- OTLP export to a local Jaeger trace explorer.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -93,6 +98,7 @@ docker compose up --build
 Open the analyst website at [http://localhost:3000](http://localhost:3000). The API remains available at `http://localhost:8080`; browser requests use `/api` through the website reverse proxy.
 
 Operational metrics are available at [http://localhost:8080/metrics](http://localhost:8080/metrics), Prometheus at [http://localhost:9090](http://localhost:9090), and the provisioned read-only Grafana dashboard at [http://localhost:3001](http://localhost:3001).
+Distributed traces can be explored in Jaeger at [http://localhost:16686](http://localhost:16686).
 
 Analysts and administrators can register customers from **Customers → New customer**. After an independent reviewer activates a customer, analysts and administrators can ingest and monitor payments from **Customers → Add transaction**. Reviewer-only controls are hidden from unauthorized roles, while the API remains the authoritative authorization boundary.
 
@@ -120,6 +126,8 @@ Runtime environment variables:
 | `SCREENING_PROVIDER_TIMEOUT` | no | `5s` |
 | `SCREENING_PROVIDER_RETRIES` | no | `2` |
 | `NOTIFICATION_WEBHOOK_URL` | no | delivery disabled |
+| `OTEL_SERVICE_NAME` | no | `fccp-api` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | tracing stays local/no exporter |
 | `JWT_ISSUER` | yes | Keycloak realm URL in Compose |
 | `JWT_JWKS_URL` | yes | internal Keycloak JWKS URL in Compose |
 | `JWT_AUTHORIZED_PARTY` | no | `fccp-web` |
@@ -129,6 +137,8 @@ Runtime environment variables:
 | `KEYCLOAK_PORT` | Compose only | `8081` |
 | `PROMETHEUS_PORT` | Compose only | `9090` |
 | `GRAFANA_PORT` | Compose only | `3001` |
+| `JAEGER_PORT` | Compose only | `16686` |
+| `OTLP_HTTP_PORT` | Compose only | `4318` |
 
 `SIGINT` and `SIGTERM` trigger graceful HTTP shutdown before the database pool is closed.
 
@@ -253,7 +263,7 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 ## Planned milestones
 
 1. Email delivery adapter and notification-channel preferences.
-2. OpenTelemetry distributed tracing across HTTP, PostgreSQL and workers.
+2. Security hardening, dependency scanning and a documented threat model.
 3. Deployment hardening, secrets management, backups and disaster-recovery procedures.
 
 ## Important boundary

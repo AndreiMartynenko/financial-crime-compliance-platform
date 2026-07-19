@@ -35,6 +35,17 @@ func run(logger *slog.Logger) error {
 	if databaseURL == "" {
 		return fmt.Errorf("DATABASE_URL is required")
 	}
+	traceShutdown, err := observability.InitTracing(context.Background(), os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"), envString("OTEL_SERVICE_NAME", "fccp-api"))
+	if err != nil {
+		return fmt.Errorf("configure tracing: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := traceShutdown(shutdownCtx); err != nil {
+			logger.Error("flush traces", "error", err)
+		}
+	}()
 	authenticator, err := auth.NewJWKSAuthenticator(os.Getenv("JWT_JWKS_URL"), os.Getenv("JWT_ISSUER"), envString("JWT_AUTHORIZED_PARTY", "fccp-web"))
 	if err != nil {
 		return fmt.Errorf("configure authentication: %w", err)
@@ -67,7 +78,12 @@ func run(logger *slog.Logger) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, databaseURL)
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return fmt.Errorf("parse database config: %w", err)
+	}
+	poolConfig.ConnConfig.Tracer = observability.PGXTracer{}
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return fmt.Errorf("configure database: %w", err)
 	}
@@ -137,7 +153,9 @@ func runDeliveryWorker(ctx context.Context, logger *slog.Logger, service *applic
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			count, err := service.RunDue(ctx, 25)
+			workerCtx, span := observability.StartWorkerSpan(ctx, "notification.delivery")
+			count, err := service.RunDue(workerCtx, 25)
+			span.End()
 			pending, pendingErr := service.Pending(ctx)
 			if err == nil && pendingErr != nil {
 				err = pendingErr
@@ -161,7 +179,9 @@ func runScreeningWorker(ctx context.Context, logger *slog.Logger, service *appli
 			logger.Info("screening worker stopped")
 			return
 		case <-ticker.C:
-			count, err := service.RunDue(ctx, 25)
+			workerCtx, span := observability.StartWorkerSpan(ctx, "screening.recurring")
+			count, err := service.RunDue(workerCtx, 25)
+			span.End()
 			metrics.ObserveWorker(count, err)
 			if err != nil {
 				logger.Error("ongoing screening failed", "error", err)

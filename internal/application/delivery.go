@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/domain"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	"time"
 )
 
@@ -38,7 +40,13 @@ func (s *DeliveryService) RunDue(ctx context.Context, limit int) (int, error) {
 	}
 	delivered, failed := 0, 0
 	for _, item := range items {
-		sendErr := s.sender.Send(ctx, item.Destination, item.Payload)
+		sendCtx, sendSpan := otel.Tracer("fccp/notifications").Start(ctx, "notification.webhook")
+		sendErr := s.sender.Send(sendCtx, item.Destination, item.Payload)
+		if sendErr != nil {
+			sendSpan.RecordError(sendErr)
+			sendSpan.SetStatus(codes.Error, sendErr.Error())
+		}
+		sendSpan.End()
 		lastError := ""
 		next := now
 		if sendErr != nil {
