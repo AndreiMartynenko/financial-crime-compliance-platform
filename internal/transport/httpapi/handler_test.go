@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -218,6 +220,26 @@ func TestOnboardCustomerRequiresAuthentication(t *testing.T) {
 	}
 }
 
+func TestReadinessFailsWhenDatabaseIsUnavailable(t *testing.T) {
+	t.Parallel()
+	repo := memory.NewRepository()
+	authenticator, err := auth.NewAuthenticator(handlerTestSecret, "fccp-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(
+		application.NewOnboardingService(repo), application.NewTransactionService(repo),
+		slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator,
+		healthCheckerFunc(func(context.Context) error { return errors.New("database unavailable") }),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestReviewerCannotOnboardCustomer(t *testing.T) {
 	t.Parallel()
 	h := testHandler(t, memory.NewRepository())
@@ -238,7 +260,13 @@ func testHandler(t *testing.T, repo *memory.Repository) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator)
+	return NewHandler(application.NewOnboardingService(repo), application.NewTransactionService(repo), slog.New(slog.NewTextHandler(io.Discard, nil)), authenticator, healthCheckerFunc(func(context.Context) error { return nil }))
+}
+
+type healthCheckerFunc func(context.Context) error
+
+func (check healthCheckerFunc) Ping(ctx context.Context) error {
+	return check(ctx)
 }
 
 func signedToken(subject string, role auth.Role) string {

@@ -62,7 +62,7 @@ func run(logger *slog.Logger) error {
 	repo := postgres.NewRepository(pool)
 	service := application.NewOnboardingService(repo)
 	transactionService := application.NewTransactionService(repo)
-	handler := httpapi.NewHandler(service, transactionService, logger, authenticator)
+	handler := httpapi.NewHandler(service, transactionService, logger, authenticator, pool)
 
 	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
 	serverErrors := make(chan error, 1)

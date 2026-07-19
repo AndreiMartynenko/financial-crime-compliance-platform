@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/application"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/auth"
@@ -16,12 +18,18 @@ type Handler struct {
 	service            *application.OnboardingService
 	transactionService *application.TransactionService
 	logger             *slog.Logger
+	readiness          HealthChecker
 }
 
-func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, logger *slog.Logger, authenticator *auth.Authenticator) http.Handler {
-	h := &Handler{service: service, transactionService: transactionService, logger: logger}
+type HealthChecker interface {
+	Ping(context.Context) error
+}
+
+func NewHandler(service *application.OnboardingService, transactionService *application.TransactionService, logger *slog.Logger, authenticator *auth.Authenticator, health HealthChecker) http.Handler {
+	h := &Handler{service: service, transactionService: transactionService, logger: logger, readiness: health}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.health)
+	mux.HandleFunc("GET /readyz", h.ready)
 	mux.Handle("POST /v1/customers", authenticate(authenticator, requireRoles(h.onboardCustomer, auth.RoleAnalyst, auth.RoleAdmin)))
 	mux.Handle("POST /v1/customers/{customer_id}/approve", authenticate(authenticator, requireRoles(h.reviewCustomer(domain.ReviewApprove), auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/customers/{customer_id}/reject", authenticate(authenticator, requireRoles(h.reviewCustomer(domain.ReviewReject), auth.RoleReviewer, auth.RoleAdmin)))
@@ -29,6 +37,17 @@ func NewHandler(service *application.OnboardingService, transactionService *appl
 	mux.Handle("GET /v1/alerts", authenticate(authenticator, requireRoles(h.listAlerts, auth.RoleAnalyst, auth.RoleReviewer, auth.RoleAdmin)))
 	mux.Handle("POST /v1/alerts/{alert_id}/close", authenticate(authenticator, requireRoles(h.closeAlert, auth.RoleReviewer, auth.RoleAdmin)))
 	return requestLogging(logger, mux)
+}
+
+func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+	if err := h.readiness.Ping(ctx); err != nil {
+		h.logger.Warn("readiness check failed", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "not_ready", "Database is not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 func (h *Handler) listAlerts(w http.ResponseWriter, r *http.Request) {

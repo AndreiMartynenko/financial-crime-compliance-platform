@@ -12,6 +12,14 @@ paths:
       responses:
         "200":
           description: Service is healthy
+  /readyz:
+    get:
+      operationId: readinessCheck
+      responses:
+        "200":
+          description: API is ready and PostgreSQL is reachable
+        "503":
+          description: PostgreSQL is unavailable
   /v1/customers:
     post:
       operationId: onboardCustomer

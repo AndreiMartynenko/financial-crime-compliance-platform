@@ -243,6 +243,13 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	if err := migrations.Up(context.Background(), pool); err != nil {
 		t.Fatal(err)
 	}
+	var migrationCount int
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
+		t.Fatal(err)
+	}
+	if migrationCount != 4 {
+		t.Fatalf("applied migrations=%d, want 4", migrationCount)
+	}
 	return pool
 }
 

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: financial_crime_test
+          POSTGRES_USER: financial_crime
+          POSTGRES_PASSWORD: integration_test_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U financial_crime -d financial_crime_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://financial_crime:integration_test_only@localhost:5432/financial_crime_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Validate Compose
+        run: docker compose config --quiet
+      - name: Build container
+        run: docker compose build api

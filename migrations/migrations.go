@@ -21,17 +21,49 @@ var transactionIngestionSchema string
 var monitoringAlertsSchema string
 
 func Up(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, initialSchema); err != nil {
-		return fmt.Errorf("apply initial database migration: %w", err)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin migrations: %w", err)
 	}
-	if _, err := pool.Exec(ctx, customerApprovalSchema); err != nil {
-		return fmt.Errorf("apply customer approval migration: %w", err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(7281942501)"); err != nil {
+		return fmt.Errorf("lock migrations: %w", err)
 	}
-	if _, err := pool.Exec(ctx, transactionIngestionSchema); err != nil {
-		return fmt.Errorf("apply transaction ingestion migration: %w", err)
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`); err != nil {
+		return fmt.Errorf("create migration ledger: %w", err)
 	}
-	if _, err := pool.Exec(ctx, monitoringAlertsSchema); err != nil {
-		return fmt.Errorf("apply monitoring alerts migration: %w", err)
+	migrationList := []struct {
+		version int
+		name    string
+		sql     string
+	}{
+		{1, "initial", initialSchema},
+		{2, "customer_approval", customerApprovalSchema},
+		{3, "transaction_ingestion", transactionIngestionSchema},
+		{4, "monitoring_alerts", monitoringAlertsSchema},
+	}
+	for _, migration := range migrationList {
+		var applied bool
+		if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)", migration.version).Scan(&applied); err != nil {
+			return fmt.Errorf("check migration %d: %w", migration.version, err)
+		}
+		if applied {
+			continue
+		}
+		if _, err := tx.Exec(ctx, migration.sql); err != nil {
+			return fmt.Errorf("apply migration %d (%s): %w", migration.version, migration.name, err)
+		}
+		if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version, name) VALUES ($1, $2)", migration.version, migration.name); err != nil {
+			return fmt.Errorf("record migration %d: %w", migration.version, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
 	}
 	return nil
 }

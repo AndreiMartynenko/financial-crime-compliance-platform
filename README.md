@@ -34,7 +34,10 @@ Implemented:
 - deterministic transaction-monitoring rules with stored rule versions;
 - explainable alerts with rule and reason codes;
 - atomic transaction, alert, and audit-event persistence;
-- role-protected alert listing and closure workflow.
+- role-protected alert listing and closure workflow;
+- migration ledger protected by a PostgreSQL advisory lock;
+- separate liveness and database-backed readiness probes;
+- GitHub Actions verification with PostgreSQL integration tests, race detection, vet and container build.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -67,6 +70,8 @@ Runtime environment variables:
 | `API_PORT` | Compose only | `8080` |
 
 `SIGINT` and `SIGTERM` trigger graceful HTTP shutdown before the database pool is closed.
+
+`GET /healthz` is a process liveness probe. `GET /readyz` verifies that PostgreSQL is reachable and returns `503` when the API should be removed from service. Database migrations are recorded in `schema_migrations` and serialized with a PostgreSQL advisory transaction lock, so concurrent application starts cannot apply the same migration twice.
 
 Run the PostgreSQL persistence and rollback integration tests against a disposable database:
 
