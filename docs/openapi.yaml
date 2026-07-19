@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.1.0
-  description: Portfolio API for explainable AML/KYC customer-risk assessment.
+  version: 0.2.0
+  description: Portfolio API for explainable AML/KYC customer-risk assessment with transactional PostgreSQL persistence.
 servers:
   - url: http://localhost:8080
 paths:
@@ -37,8 +37,24 @@ paths:
                 $ref: "#/components/schemas/Customer"
         "400": {description: Malformed JSON}
         "422": {description: Customer validation failed}
+        "500":
+          description: Customer and audit event could not be persisted; the transaction is rolled back
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
     OnboardCustomer:
       type: object
       required: [type, legal_name, country_code, risk_factors]

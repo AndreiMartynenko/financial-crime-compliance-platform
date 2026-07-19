@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Customer Risk Assessment and EDD Workflow
+## Current milestone: PostgreSQL persistence and transactional audit
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -17,15 +17,42 @@ Implemented:
 - HTTP validation and structured errors;
 - OpenAPI 3.1 contract in `docs/openapi.yaml`;
 - unit and API-level tests;
-- initial PostgreSQL schema and Docker packaging.
+- PostgreSQL-backed runtime and Docker packaging;
+- atomic customer and audit-event writes in one database transaction;
+- embedded, idempotent schema migration at startup.
 
-The running API currently uses an in-memory repository. PostgreSQL persistence is the next implementation step; the migration is included to make the intended storage model reviewable.
+The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
 ## Run locally
 
 ```bash
 go test ./...
-go run ./cmd/api
+docker compose up --build
+```
+
+The API applies the embedded SQL migration when it starts. For running the API outside Compose:
+
+```bash
+DATABASE_URL='postgres://financial_crime:local_development_only@localhost:5432/financial_crime?sslmode=disable' go run ./cmd/api
+```
+
+Runtime environment variables:
+
+| Variable | Required | Default |
+|---|---|---|
+| `DATABASE_URL` | yes | none |
+| `HTTP_ADDR` | no | `:8080` |
+| `HTTP_READ_HEADER_TIMEOUT` | no | `5s` |
+| `HTTP_SHUTDOWN_TIMEOUT` | no | `10s` |
+| `POSTGRES_PORT` | Compose only | `5432` |
+| `API_PORT` | Compose only | `8080` |
+
+`SIGINT` and `SIGTERM` trigger graceful HTTP shutdown before the database pool is closed.
+
+Run the PostgreSQL rollback integration test against a disposable database:
+
+```bash
+TEST_DATABASE_URL='postgres://financial_crime:local_development_only@localhost:5432/financial_crime?sslmode=disable' go test ./internal/infrastructure/postgres
 ```
 
 Create a high-risk company:
@@ -68,11 +95,10 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 
 ## Planned milestones
 
-1. PostgreSQL repository and transactional audit writes.
-2. Authentication, RBAC and maker-checker approval.
-3. Transaction ingestion and versioned monitoring rules.
-4. Alert investigation and case management.
-5. Minimal analyst web interface.
+1. Authentication, RBAC and maker-checker approval.
+2. Transaction ingestion and versioned monitoring rules.
+3. Alert investigation and case management.
+4. Minimal analyst web interface.
 
 ## Important boundary
 

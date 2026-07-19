@@ -1,4 +1,4 @@
-CREATE TABLE customers (
+CREATE TABLE IF NOT EXISTS customers (
     id UUID PRIMARY KEY,
     external_ref TEXT NOT NULL,
     customer_type TEXT NOT NULL CHECK (customer_type IN ('individual', 'company')),
@@ -14,18 +14,18 @@ CREATE TABLE customers (
     created_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE UNIQUE INDEX customers_external_ref_unique
+CREATE UNIQUE INDEX IF NOT EXISTS customers_external_ref_unique
     ON customers (external_ref)
     WHERE external_ref <> '';
 
-CREATE TABLE audit_events (
+CREATE TABLE IF NOT EXISTS audit_events (
     id UUID PRIMARY KEY,
-    aggregate_id UUID NOT NULL,
+    aggregate_id UUID NOT NULL REFERENCES customers(id),
     event_type TEXT NOT NULL,
     actor TEXT NOT NULL,
     occurred_at TIMESTAMPTZ NOT NULL,
     payload JSONB NOT NULL
 );
 
-CREATE INDEX audit_events_aggregate_time_idx
+CREATE INDEX IF NOT EXISTS audit_events_aggregate_time_idx
     ON audit_events (aggregate_id, occurred_at);
