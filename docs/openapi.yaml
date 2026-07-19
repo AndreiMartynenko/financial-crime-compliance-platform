@@ -1,0 +1,88 @@
+openapi: 3.1.0
+info:
+  title: Financial Crime Compliance Platform API
+  version: 0.1.0
+  description: Portfolio API for explainable AML/KYC customer-risk assessment.
+servers:
+  - url: http://localhost:8080
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service is healthy
+  /v1/customers:
+    post:
+      operationId: onboardCustomer
+      summary: Onboard and risk-assess a customer
+      parameters:
+        - in: header
+          name: X-Actor-ID
+          required: false
+          schema: {type: string}
+          description: Identity recorded in the audit event.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnboardCustomer"
+      responses:
+        "201":
+          description: Customer created and assessed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "400": {description: Malformed JSON}
+        "422": {description: Customer validation failed}
+components:
+  schemas:
+    OnboardCustomer:
+      type: object
+      required: [type, legal_name, country_code, risk_factors]
+      properties:
+        external_ref: {type: string}
+        type: {type: string, enum: [individual, company]}
+        legal_name: {type: string}
+        country_code: {type: string, minLength: 2, maxLength: 2}
+        risk_factors:
+          $ref: "#/components/schemas/RiskFactors"
+    RiskFactors:
+      type: object
+      required: [country_risk, source_of_funds_verified]
+      properties:
+        country_risk: {type: string, enum: [low, medium, high]}
+        pep: {type: boolean}
+        sanctions_potential_match: {type: boolean}
+        high_risk_industry: {type: boolean}
+        complex_ownership: {type: boolean}
+        source_of_funds_verified: {type: boolean}
+    Customer:
+      type: object
+      required: [id, type, legal_name, country_code, risk_factors, risk_assessment, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        external_ref: {type: string}
+        type: {type: string, enum: [individual, company]}
+        legal_name: {type: string}
+        country_code: {type: string}
+        risk_factors: {$ref: "#/components/schemas/RiskFactors"}
+        risk_assessment:
+          type: object
+          properties:
+            score: {type: integer}
+            rating: {type: string, enum: [low, medium, high]}
+            due_diligence: {type: string, enum: [standard, enhanced, blocked_pending_review]}
+            reasons:
+              type: array
+              items:
+                type: object
+                properties:
+                  code: {type: string}
+                  points: {type: integer}
+                  detail: {type: string}
+            assessed_at: {type: string, format: date-time}
+            rule_version: {type: string}
+        created_at: {type: string, format: date-time}
