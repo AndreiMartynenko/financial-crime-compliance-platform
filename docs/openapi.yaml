@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Financial Crime Compliance Platform API
-  version: 0.19.0
+  version: 0.20.0
   description: Portfolio API for authenticated customer-risk assessment, sanctions and PEP screening, financial transaction monitoring, and explainable alert investigation.
 servers:
   - url: http://localhost:8080
@@ -24,6 +24,7 @@ paths:
     get:
       operationId: prometheusMetrics
       summary: Export operational metrics in Prometheus text format
+      security: [{metricsAuth: []}]
       responses:
         "200": {description: Prometheus metrics}
   /v1/customers:
@@ -571,6 +572,10 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: RS256 access token issued through OIDC Authorization Code + PKCE. The API validates JWKS signature, issuer, authorized party, expiry and realm roles.
+    metricsAuth:
+      type: http
+      scheme: bearer
+      description: Separate operations credential configured through `METRICS_TOKEN`.
   schemas:
     Error:
       type: object

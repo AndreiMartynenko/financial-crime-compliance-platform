@@ -5,5 +5,8 @@ rule_files:
 scrape_configs:
   - job_name: fccp-api
     metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials: local-metrics-demo-only
     static_configs:
       - targets: ["api:8080"]

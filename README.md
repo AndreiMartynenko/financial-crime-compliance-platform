@@ -2,7 +2,7 @@
 
 A portfolio project demonstrating how AML/KYC domain requirements can be translated into an auditable Go backend.
 
-## Current milestone: Distributed tracing
+## Current milestone: Security hardening
 
 The first vertical slice accepts a customer, evaluates explicit risk factors, assigns a reproducible risk rating and due-diligence route, and records an audit event.
 
@@ -85,6 +85,11 @@ Implemented:
 - root spans for recurring screening and notification workers;
 - W3C `traceparent` propagation plus trace/span IDs in structured request logs;
 - OTLP export to a local Jaeger trace explorer.
+- restrictive API and Nginx security headers with sensitive-response cache prevention;
+- configurable per-client token-bucket rate limiting;
+- constant-time bearer protection for the Prometheus endpoint;
+- CI vulnerability scanning for Go, npm and the API container image;
+- a maintained threat model in `docs/THREAT_MODEL.md`.
 
 The in-memory repository remains available for fast API tests. The running API requires PostgreSQL and reads its connection string from `DATABASE_URL`.
 
@@ -119,6 +124,9 @@ Runtime environment variables:
 | `HTTP_ADDR` | no | `:8080` |
 | `HTTP_READ_HEADER_TIMEOUT` | no | `5s` |
 | `HTTP_SHUTDOWN_TIMEOUT` | no | `10s` |
+| `HTTP_RATE_LIMIT_RPS` | no | `20` |
+| `HTTP_RATE_LIMIT_BURST` | no | `40` |
+| `METRICS_TOKEN` | recommended | none outside Compose |
 | `SCREENING_WORKER_INTERVAL` | no | `1m` |
 | `SCREENING_JOB_LEASE` | no | `5m` |
 | `SCREENING_PROVIDER_URL` | no | local demo provider |
@@ -263,8 +271,8 @@ Scores below 20 are low risk, 20-49 medium risk, and 50 or above high risk. A po
 ## Planned milestones
 
 1. Email delivery adapter and notification-channel preferences.
-2. Security hardening, dependency scanning and a documented threat model.
-3. Deployment hardening, secrets management, backups and disaster-recovery procedures.
+2. Staging deployment with HTTPS, managed secrets and automated rollback.
+3. Backups, tested restore procedures and disaster-recovery documentation.
 
 ## Important boundary
 

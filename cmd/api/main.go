@@ -17,6 +17,7 @@ import (
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/postgres"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/infrastructure/screening"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/observability"
+	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/security"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/internal/transport/httpapi"
 	"github.com/AndreiMartynenko/financial-crime-compliance-platform/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -74,6 +75,20 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if providerRetries > 10 {
+		return fmt.Errorf("SCREENING_PROVIDER_RETRIES must be between 0 and 10")
+	}
+	rateLimit, err := envFloat("HTTP_RATE_LIMIT_RPS", 20)
+	if err != nil {
+		return err
+	}
+	rateBurst, err := envInt("HTTP_RATE_LIMIT_BURST", 40)
+	if err != nil {
+		return err
+	}
+	if rateBurst < 1 {
+		return fmt.Errorf("HTTP_RATE_LIMIT_BURST must be positive")
+	}
 	address := envString("HTTP_ADDR", ":8080")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -110,6 +125,7 @@ func run(logger *slog.Logger) error {
 	webhookURL := os.Getenv("NOTIFICATION_WEBHOOK_URL")
 	screeningService.SetNotificationWebhook(webhookURL)
 	metrics := observability.NewRegistry()
+	metrics.SetMetricsToken(os.Getenv("METRICS_TOKEN"))
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
 	go runScreeningWorker(workerCtx, logger, screeningService, metrics, workerInterval)
@@ -118,6 +134,7 @@ func run(logger *slog.Logger) error {
 		go runDeliveryWorker(workerCtx, logger, deliveryService, metrics, workerInterval)
 	}
 	handler := httpapi.NewHandler(service, transactionService, queryService, caseService, dueDiligenceService, screeningService, logger, authenticator, pool, metrics)
+	handler = security.Headers(security.NewRateLimiter(rateLimit, rateBurst).Middleware(handler))
 
 	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
 	serverErrors := make(chan error, 1)
@@ -218,8 +235,19 @@ func envInt(name string, fallback int) (int, error) {
 		return fallback, nil
 	}
 	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 0 || parsed > 10 {
-		return 0, fmt.Errorf("%s must be between 0 and 10", name)
+	if err != nil || parsed < 0 || parsed > 10000 {
+		return 0, fmt.Errorf("%s must be between 0 and 10000", name)
+	}
+	return parsed, nil
+}
+func envFloat(name string, fallback float64) (float64, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed <= 0 || parsed > 10000 {
+		return 0, fmt.Errorf("%s must be a positive number up to 10000", name)
 	}
 	return parsed, nil
 }

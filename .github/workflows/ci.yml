@@ -31,12 +31,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24.x"
+          go-version: "1.25.x"
           cache: true
       - name: Test with race detector
         run: go test -race -count=1 ./...
       - name: Vet
         run: go vet ./...
+      - name: Go vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -45,7 +47,19 @@ jobs:
       - name: Build website
         working-directory: web
         run: npm ci && npm run build
+      - name: Audit website dependencies
+        working-directory: web
+        run: npm audit --audit-level=high
       - name: Validate Compose
         run: docker compose config --quiet
       - name: Build container
         run: docker compose build api web
+      - name: Build scan target
+        run: docker build -t fccp-api:ci .
+      - name: Scan API image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: fccp-api:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"

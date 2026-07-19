@@ -36,3 +36,19 @@ func TestDeliveryMetrics(t *testing.T) {
 		}
 	}
 }
+func TestMetricsToken(t *testing.T) {
+	registry := NewRegistry()
+	registry.SetMetricsToken("secret")
+	denied := httptest.NewRecorder()
+	registry.Handler(denied, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if denied.Code != http.StatusUnauthorized {
+		t.Fatalf("denied=%d", denied.Code)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	allowed := httptest.NewRecorder()
+	registry.Handler(allowed, request)
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("allowed=%d", allowed.Code)
+	}
+}

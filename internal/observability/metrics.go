@@ -2,6 +2,7 @@ package observability
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -26,6 +27,7 @@ type Registry struct {
 	deliveryErrors      uint64
 	deliveriesCompleted uint64
 	outboxPending       int
+	metricsToken        string
 }
 
 func (r *Registry) ObserveDelivery(completed, pending int, err error) {
@@ -40,6 +42,11 @@ func (r *Registry) ObserveDelivery(completed, pending int, err error) {
 }
 
 func NewRegistry() *Registry { return &Registry{http: map[string]httpMetric{}} }
+func (r *Registry) SetMetricsToken(token string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.metricsToken = strings.TrimSpace(token)
+}
 
 func (r *Registry) ObserveWorker(completed int, err error) {
 	r.mu.Lock()
@@ -95,9 +102,17 @@ func (r *Registry) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-func (r *Registry) Handler(w http.ResponseWriter, _ *http.Request) {
+func (r *Registry) Handler(w http.ResponseWriter, request *http.Request) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if r.metricsToken != "" {
+		provided := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(r.metricsToken)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	fmt.Fprintln(w, "# HELP fccp_http_requests_total Total HTTP requests.")
 	fmt.Fprintln(w, "# TYPE fccp_http_requests_total counter")
